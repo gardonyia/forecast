@@ -1,0 +1,10 @@
+streamlit
+xarray
+cfgrib
+eccodes
+geopandas
+shapely
+requests
+numpy
+rioxarray
+pyproj
