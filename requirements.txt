@@ -1,10 +1,9 @@
 streamlit
-xarray
-cfgrib
-eccodes
-geopandas
-shapely
 requests
+cfgrib
+xarray
 numpy
-rioxarray
-pyproj
+pandas
+matplotlib
+cartopy
+eccodes
