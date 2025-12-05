@@ -1,9 +1,9 @@
 streamlit
 requests
 cfgrib
+eccodes
 xarray
 numpy
 pandas
 matplotlib
 cartopy
-eccodes
