@@ -2,109 +2,96 @@ import streamlit as st
 import requests
 import xarray as xr
 import numpy as np
-import datetime as dt
+import pandas as pd
+from datetime import datetime, timedelta
 import tempfile
-import cfgrib
+import os
 
-st.set_page_config(page_title="HU Országos hőmérsékleti előrejelzés – GFS 0.25°", layout="wide")
+st.set_page_config(page_title="HU Hőmérsékleti előrejelzés – GFS 0.25°", layout="wide")
 
-# -----------------------------
-# IDŐINTERVALLUM
-# -----------------------------
-now = dt.datetime.utcnow()
-tomorrow = now.date() + dt.timedelta(days=1)
-day_after = now.date() + dt.timedelta(days=2)
+# -------------------------------
+# DÁTUMOK
+# -------------------------------
+now = datetime.utcnow()
 
-start_time = dt.datetime.combine(tomorrow, dt.time(18, 0))
-end_time = dt.datetime.combine(day_after, dt.time(18, 0))
+# mindig a futtatás napját használjuk
+run_date = now.strftime("%Y%m%d")
+run_cycle = "12"   # a 12z futás a legstabilabb
+
+# előrejelzési intervallum: holnap 18:00 UTC – holnapután 18:00 UTC
+start_time = (now + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+end_time   = (now + timedelta(days=2)).replace(hour=18, minute=0, second=0, microsecond=0)
 
 start_str = start_time.strftime("%Y.%m.%d 18:00 UTC")
-end_str = end_time.strftime("%Y.%m.%d 18:00 UTC")
+end_str   = end_time.strftime("%Y.%m.%d 18:00 UTC")
 
-# -----------------------------
-# GFS FUTÁS
-# -----------------------------
-current_hour = now.hour
-cycle = max([h for h in [0, 6, 12, 18] if h <= current_hour])
-cycle_str = f"{cycle:02d}"
-date_str = now.strftime("%Y%m%d")
+# -------------------------------
+# FEJLÉC
+# -------------------------------
+st.title("HU Országos hőmérsékleti előrejelzés – GFS 0.25°°")
 
-start_cycle = dt.datetime.strptime(date_str + cycle_str, "%Y%m%d%H")
-
-hours = list(range(0, 385, 3))
-valid_hours = []
-
-for h in hours:
-    t = start_cycle + dt.timedelta(hours=h)
-    if start_time <= t <= end_time:
-        valid_hours.append(h)
-
-if not valid_hours:
-    closest = min(hours, key=lambda h: abs((start_cycle + dt.timedelta(hours=h)) - start_time))
-    valid_hours = [closest]
-
-# -----------------------------
-# CÍM
-# -----------------------------
-st.title("HU Országos hőmérsékleti előrejelzés – GFS 0.25°")
 st.write(f"**Érvényes időablak:** {start_str} → {end_str}")
-st.write(f"**GFS futás:** {date_str} {cycle_str}z")
-st.write("**Modell:** NOAA GFS 0.25°, változó: 2 m hőmérséklet")
+st.write(f"**GFS futás:** {run_date} {run_cycle}z")
+st.write("**Modell:** NOAA GFS 0.25°, változó: 2 m hőmérséklet\n")
 
-# -----------------------------
-# LETÖLTÉS + ELŐREJELZÉS
-# -----------------------------
+# -------------------------------
+# GFS GRIB letöltési függvény
+# -------------------------------
+def download_gfs_grib(forecast_hour):
+    """
+    Letölti a GFS 0.25° GRIB2 fájlt (2 m hőmérséklet - TMP, level=2m above ground)
+    """
+    url = (
+        f"https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/"
+        f"gfs.{run_date}/{run_cycle}/atmos/gfs.t{run_cycle}z.pgrb2.0p25.f{forecast_hour:03d}"
+    )
+
+    st.info(f"GRIB letöltése: f{forecast_hour:03d} • {url}")
+
+    response = requests.get(url)
+    if response.status_code != 200:
+        st.error(f"Hiba: {response.status_code} – nem sikerült letölteni a GRIB-et.")
+        return None
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".grib2")
+    with open(tmp.name, "wb") as f:
+        f.write(response.content)
+
+    return tmp.name
+
+# -------------------------------
+# ELŐREJELZÉS KISZÁMÍTÁSA
+# -------------------------------
 if st.button("🔍 Előrejelzés kiszámítása"):
+    st.subheader("Hőmérsékleti előrejelzés számítása")
 
-    t2m_values = []
+    # az érintett órák meghatározása
+    forecast_hours = list(range(24, 60, 3))   # 24–57 óra között 3 órás felbontás
 
-    for fh in valid_hours:
-        # ÚJ NOAA FILTER API (nincs 403!)
-        url = (
-            "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?"
-            f"file=gfs.t{cycle_str}z.pgrb2.0p25.f{fh:03d}"
-            "&var_tmp=on"
-            "&lev_2_m_above_ground=on"
-            "&subregion=&leftlon=16&rightlon=23&toplat=48.5&bottomlat=45.5"
-            f"&dir=%2Fgfs.{date_str}%2F{cycle_str}%2Fatmos"
-        )
+    temps = []
+    times = []
 
-        try:
-            response = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
-            response.raise_for_status()
-
-            with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                tmp.write(response.content)
-                tmp_path = tmp.name
-
-            ds = xr.open_dataset(
-                tmp_path,
-                engine="cfgrib",
-                backend_kwargs={"filter_by_keys": {"typeOfLevel": "heightAboveGround", "level": 2}}
-            )
-
-            arr = ds["t2m"].values - 273.15  # Kelvin → Celsius
-            t2m_values.append(arr)
-
-        except Exception as e:
-            st.error(f"GRIB hiba ({fh:03d} óra): {e}")
+    for fh in forecast_hours:
+        grib = download_gfs_grib(fh)
+        if grib is None:
             continue
 
-    if not t2m_values:
-        st.error("Nem sikerült adatot letölteni a NOAA-tól.")
-        st.stop()
+        try:
+            ds = xr.open_dataset(grib, engine="cfgrib")
+            varname = [v for v in ds.data_vars.keys() if "t2m" in v.lower() or "tmp" in v.lower()][0]
+            t = ds[varname]
 
-    merged = np.stack(t2m_values, axis=0)
-    tmin = float(np.nanmin(merged))
-    tmax = float(np.nanmax(merged))
+            # Magyarország koordinátái
+            t_hu = t.sel(latitude=slice(48.5, 45.5), longitude=slice(16, 23))
+            temps.append(float(t_hu.mean()))
+            times.append(now + timedelta(hours=fh))
 
-    st.subheader("📊 Országos előrejelzés eredménye")
-    st.success(f"**Országos minimum:** {tmin:.1f} °C")
-    st.success(f"**Országos maximum:** {tmax:.1f} °C")
+        except Exception as e:
+            st.error(f"GRIB olvasási hiba: {e}")
 
-    st.subheader("🌡️ Hőtérkép előnézet")
-    st.image(
-        "/mnt/data/cc597a8d-a6af-41f1-bfe8-eec954d546c8.png",
-        caption="Hőtérkép-animáció előnézete (statikus preview)",
-        use_column_width=True
-    )
+        os.remove(grib)
+
+    if temps:
+        df = pd.DataFrame({"Dátum": times, "T2m (°C)": np.array(temps) - 273.15})
+        st.line_chart(df.set_index("Dátum"))
+        st.success("✔ Előrejelzés elkészült!")
