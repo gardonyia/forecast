@@ -10,14 +10,15 @@ from shapely.geometry import Point, Polygon
 # --- KONFIGURÁCIÓ ---
 st.set_page_config(page_title="Modell-Súlyozó Dashboard", layout="wide", page_icon="🌡️")
 
-# Letisztult UI stílus és gomb elrendezés fix
+# UI Stílus beállítása
 st.markdown("""
     <style>
     .stMetric { background-color: #ffffff; padding: 15px; border-radius: 12px; border: 1px solid #eee; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
     .info-box { background-color: #f8f9fa; padding: 18px; border-radius: 10px; font-size: 0.85rem; border-left: 5px solid #0d6efd; line-height: 1.6; }
-    .help-text { font-size: 0.78rem; color: #6c757d; margin-top: -15px; margin-bottom: 10px; }
-    /* Gomb vertikális igazítása a dátumválasztóhoz */
-    div[data-testid="stButton"] { margin-top: 28px; }
+    .help-text-italic { font-size: 0.75rem; color: #6c757d; font-style: italic; display: flex; align-items: center; height: 100%; padding-top: 25px; }
+    .tech-card { background-color: #ffffff; padding: 20px; border-radius: 10px; border: 1px solid #e9ecef; margin-bottom: 20px; }
+    /* Gomb vertikális igazítása és méretezése */
+    div[data-testid="stButton"] { margin-top: 28px; width: fit-content; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -65,7 +66,7 @@ def FETCH_FINAL_DATA(date):
                 r = requests.get("https://api.open-meteo.com/v1/forecast", params={
                     "latitude": curr_la, "longitude": curr_lo, "hourly": "temperature_2m",
                     "models": m_id, "start_hour": t_s, "end_hour": t_e, "timezone": "UTC"
-                }).json()
+                }, timeout=10).json()
                 pts = r if isinstance(r, list) else [r]
                 for j, p in enumerate(pts):
                     if 'hourly' in p:
@@ -81,16 +82,16 @@ main_c, side_c = st.columns([3, 1], gap="large")
 with main_c:
     st.title("🌡️ Súlyozott Modell-Előrejelzés")
     
-    # Kompakt vezérlőpult
-    ctrl_c1, ctrl_c2, ctrl_c3 = st.columns([1.5, 1, 1])
-    target_date = ctrl_c1.date_input("Választott dátum", datetime.now() + timedelta(days=1))
+    # Vezérlők: Dátum | Ikon Gomb | Dőlt Leírás
+    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1.2, 0.3, 2.5])
     
-    if ctrl_c2.button("🔄 Adatok frissítése", use_container_width=True):
+    target_date = ctrl_col1.date_input("Dátum választása", datetime.now() + timedelta(days=1))
+    
+    if ctrl_col2.button("🔄"):
         st.cache_data.clear()
         st.rerun()
-    
-    # Magyarázó szöveg a gomb alá (szélesebben elosztva)
-    ctrl_c2.markdown('<p class="help-text">Friss modellfutások betöltéséhez vagy hiba elhárításához.</p>', unsafe_allow_html=True)
+        
+    ctrl_col3.markdown('<div class="help-text-italic">Friss modellfutások betöltéséhez vagy hiba elhárításához.</div>', unsafe_allow_html=True)
     
     df = FETCH_FINAL_DATA(target_date)
     
@@ -110,17 +111,12 @@ with main_c:
         mapc2.plotly_chart(draw_m(df, "max", "Reds", "Maximum Hőtérkép"), use_container_width=True)
 
 with side_c:
-    st.subheader("⚙️ Szakmai Háttér")
+    st.subheader("⚙️ Szakmai Kivonat")
     st.markdown("""
     <div class="info-box">
-    <b>Adatforrás:</b><br>
-    Az <b>Open-Meteo API</b> szabad modelladatai (ECMWF, GFS, ICON).
-    <br><br>
-    <b>Éghajlati nap (WMO):</b><br>
-    A mérés minden nap 18:00 UTC és a következő nap 18:00 UTC között zajlik.
-    <br><br>
-    <b>Rácsháló:</b><br>
-    $0.15^{\circ} \times 0.18^{\circ}$ felbontás, amely segít a domborzati mélyedések (fagyzugok) azonosításában.
+    <b>Adatforrás:</b> Open-Meteo API.<br><br>
+    <b>Súlyozás:</b> ECMWF (45%), GFS (30%), ICON (25%)<br><br>
+    <b>Éghajlati nap:</b> 18:00 UTC - 18:00 UTC.
     </div>
     """, unsafe_allow_html=True)
     
@@ -128,3 +124,34 @@ with side_c:
     fig_p = px.pie(w_df, values='Súly', names='Modell', hole=0.5, color_discrete_sequence=px.colors.sequential.Teal)
     fig_p.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=300, showlegend=True, legend=dict(orientation="h", y=-0.2))
     st.plotly_chart(fig_p, use_container_width=True)
+
+# --- BŐVEBB TECHNIKAI LEÍRÁS ---
+st.divider()
+st.subheader("📘 Bővebb technikai leírás")
+
+col_a, col_b = st.columns(2)
+
+with col_a:
+    st.markdown("""
+    ### 1. Adatgyűjtés és Rácsháló
+    A program nem egyetlen pontra kér le adatot, hanem egy **virtuális rácshálót** fektet Magyarország térképére.
+    * **Pontosság:** A rácspontok felbontása ($0.15^{\circ} \\times 0.18^{\circ}$) lehetővé teszi a lokális különbségek (pl. völgyek, fagyzugok) detektálását.
+    * **Szűrés:** Csak az országhatáron belüli pontokat dolgozzuk fel geofencing eljárással.
+    
+    ### 2. Multi-Modell Ensemble Súlyozás
+    Az eredmény három globális modell súlyozott kombinációja:
+    * **ECMWF (45%):** Az európai csúcsmodell.
+    * **GFS (30%):** Az amerikai globális modell.
+    * **ICON (25%):** A német precíziós modell.
+    """)
+
+with col_b:
+    st.markdown("""
+    ### 3. Az "Éghajlati Nap" Logikája
+    A mérés **18:00 UTC-től** a következő nap **18:00 UTC-ig** tart. Ez biztosítja, hogy a napi minimum (hajnal) és maximum (délután) egyazon statisztikai egységbe kerüljön.
+
+    ### 4. Megjelenítés
+    A térképek interaktívak: az egérrel belenagyíthat az egyes régiókba. A színskálák (Viridis és Reds) a meteorológiai vizualizációk szabványaihoz igazodnak.
+    """)
+
+st.info("💡 Tipp: Az ikon gomb (🔄) megnyomásával törölheted a korábbi mentett adatokat, ha gyanítod, hogy új modellfutás vált elérhetővé.")
