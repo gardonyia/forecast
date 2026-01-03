@@ -10,14 +10,12 @@ from shapely.geometry import Point, Polygon
 # --- KONFIGURÁCIÓ ---
 st.set_page_config(page_title="Modell-Súlyozó Dashboard", layout="wide", page_icon="🌡️")
 
-# UI Stílus beállítása
 st.markdown("""
     <style>
     .stMetric { background-color: #ffffff; padding: 15px; border-radius: 12px; border: 1px solid #eee; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
     .tech-details { background-color: #f8f9fa; padding: 18px; border-radius: 10px; font-size: 0.85rem; border-left: 5px solid #0d6efd; line-height: 1.6; }
     .tech-header { color: #0d6efd; font-weight: bold; margin-bottom: 8px; display: block; }
-    div[data-testid="stButton"] { margin-top: 28px; }
-    /* Progress bar szöveg kiemelése */
+    /* Progress bar stílus */
     .stProgress > div > div > div > div { background-color: #0d6efd; }
     </style>
     """, unsafe_allow_html=True)
@@ -32,27 +30,22 @@ def find_nearest_city(lat, lon):
     dists = [((c["lat"] - lat)**2 + (c["lon"] - lon)**2, c["n"]) for c in CITIES]
     return min(dists)[1]
 
-# --- DINAMIKUS SÚLYOZÁS SZÁZALÉKOS KIJELZÉSSEL ---
-def calculate_dynamic_weights():
+# --- MODELL SÚLYOZÁS FÜGGVÉNY ---
+def calculate_dynamic_weights(prog_bar, status_text):
     yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
     models = ["ecmwf_ifs", "gfs_seamless", "icon_seamless"]
     model_scores = {m: 0.0 for m in models}
     
-    prog_w = st.progress(0)
-    stat_w = st.empty()
-    
     try:
         for idx, city in enumerate(CITIES):
             percent = int((idx / len(CITIES)) * 100)
-            prog_w.progress(percent)
-            stat_w.markdown(f"**Validálás (tegnapi pontosság): {percent}%** - Aktuális: {city['n']}")
+            prog_bar.progress(percent)
+            status_text.markdown(f"**Validálás: {percent}%** - Aktuális: {city['n']}")
             
-            # Előrejelzés lekérése
             r = requests.get("https://api.open-meteo.com/v1/forecast", params={
                 "latitude": city['lat'], "longitude": city['lon'], "hourly": "temperature_2m",
                 "models": ",".join(models), "start_date": yesterday, "end_date": yesterday, "timezone": "UTC"
             }).json()
-            # Tényadat lekérése
             ra = requests.get("https://archive-api.open-meteo.com/v1/archive", params={
                 "latitude": city['lat'], "longitude": city['lon'], "hourly": "temperature_2m",
                 "start_date": yesterday, "end_date": yesterday
@@ -64,33 +57,24 @@ def calculate_dynamic_weights():
                 mae = np.mean(np.abs(actual - pred))
                 model_scores[m] += (1 / (mae + 0.1))
         
-        stat_w.markdown("**Validálás kész: 100%**")
+        prog_bar.progress(100)
         total = sum(model_scores.values())
-        weights = {m: model_scores[m]/total for m in models}
-        prog_w.empty()
-        stat_w.empty()
-        return weights
+        return {m: model_scores[m]/total for m in models}
     except:
-        prog_w.empty()
-        stat_w.empty()
         return {"ecmwf_ifs": 0.45, "gfs_seamless": 0.30, "icon_seamless": 0.25}
 
-# --- RÁCSHÁLÓ GENERÁLÁSA SZÁZALÉKOS KIJELZÉSSEL ---
-@st.cache_data(ttl=3600)
-def FETCH_FINAL_DATA(date, weights):
+# --- ADATLEKÉRÉS FÜGGVÉNY ---
+def FETCH_FINAL_DATA(date, weights, prog_bar, status_text):
     t_s, t_e = (date - timedelta(days=1)).strftime('%Y-%m-%dT18:00'), date.strftime('%Y-%m-%dT18:00')
     lats, lons = np.arange(45.8, 48.6, 0.15), np.arange(16.2, 22.8, 0.18)
     v_pts = [(la, lo) for la in lats for lo in lons if HU_POLY.contains(Point(lo, la))]
     results = [{"lat": p[0], "lon": p[1], "min": 0, "max": 0} for p in v_pts]
     
-    prog = st.progress(0)
-    stat = st.empty()
-    
     chunk_size = 10
     for i in range(0, len(results), chunk_size):
         percent = min(int((i / len(results)) * 100), 100)
-        prog.progress(percent)
-        stat.markdown(f"**Térkép generálása: {percent}%** - Pontok feldolgozása...")
+        prog_bar.progress(percent)
+        status_text.markdown(f"**Térkép generálása: {percent}%** - Adatok feldolgozása...")
         
         chunk = v_pts[i:i+chunk_size]
         la_c, lo_c = [c[0] for c in chunk], [c[1] for c in chunk]
@@ -99,39 +83,45 @@ def FETCH_FINAL_DATA(date, weights):
                 r = requests.get("https://api.open-meteo.com/v1/forecast", params={
                     "latitude": la_c, "longitude": lo_c, "hourly": "temperature_2m",
                     "models": m_id, "start_hour": t_s, "end_hour": t_e, "timezone": "UTC"
-                }, timeout=15).json()
+                }).json()
                 pts = r if isinstance(r, list) else [r]
                 for j, res in enumerate(pts):
-                    if 'hourly' in res:
-                        results[i+j]["min"] += min(res['hourly']['temperature_2m']) * w
-                        results[i+j]["max"] += max(res['hourly']['temperature_2m']) * w
+                    results[i+j]["min"] += min(res['hourly']['temperature_2m']) * w
+                    results[i+j]["max"] += max(res['hourly']['temperature_2m']) * w
             except: continue
-            
-    prog.empty()
-    stat.empty()
+    
+    prog_bar.empty()
+    status_text.empty()
     return pd.DataFrame(results)
 
-# --- DASHBOARD ELRENDEZÉS ---
+# --- DASHBOARD UI ---
 main_c, side_c = st.columns([2.8, 1.2], gap="large")
 
 with main_c:
-    st.title("🌡️ Súlyozott Modell-Előrejelzés")
+    st.title("Súlyozott Modell-Előrejelzés")
     c1, c2, _ = st.columns([1.2, 0.4, 2.2])
     target_date = c1.date_input("Dátum választása", datetime.now() + timedelta(days=1))
+    
     if c2.button("🔄"):
         st.cache_data.clear()
         st.rerun()
+
+    # --- ITT VAN A MEGOLDÁS: ÜRES KONTÉNEREK A BETÖLTÉSHEZ ---
+    progress_placeholder = st.empty()
+    status_placeholder = st.empty()
     
-    # 1. fázis: Súlyok
-    current_weights = calculate_dynamic_weights()
-    # 2. fázis: Adatok
-    df = FETCH_FINAL_DATA(target_date, current_weights)
+    # 1. fázis: Súlyok kiszámítása
+    current_weights = calculate_dynamic_weights(progress_placeholder, status_placeholder)
+    
+    # 2. fázis: Adatok lekérése (átadjuk a konténereket a függvénynek)
+    df = FETCH_FINAL_DATA(target_date, current_weights, progress_placeholder, status_placeholder)
     
     if not df.empty:
+        # Metrikák és térképek megjelenítése
         m1, m2 = st.columns(2)
         min_r, max_r = df.loc[df['min'].idxmin()], df.loc[df['max'].idxmax()]
-        m1.metric("📉 Országos Minimum", f"{round(min_r['min'], 1)} °C", f"{find_nearest_city(min_r['lat'], min_r['lon'])} környéke")
-        m2.metric("📈 Országos Maximum", f"{round(max_r['max'], 1)} °C", f"{find_nearest_city(max_r['lat'], max_r['lon'])} környéke")
+        m1.metric("📉 Országos Minimum", f"{round(min_r['min'], 1)} °C", f"{find_nearest_city(min_r['lat'], min_r['lon'])}")
+        m2.metric("📈 Országos Maximum", f"{round(max_r['max'], 1)} °C", f"{find_nearest_city(max_r['lat'], max_r['lon'])}")
         
         map1, map2 = st.columns(2)
         def draw(data, val, col, title):
@@ -146,23 +136,15 @@ with side_c:
     st.subheader("📘 Technikai leírás")
     st.markdown("""
     <div class="tech-details">
-        <span class="tech-header">1. Dinamikus Súlyozás (D-MOS)</span>
-        A rendszer minden indításkor elvégzi a modellek <b>on-the-fly validációját</b>. Összeveti a tegnapi előrejelzéseket a mért tényadatokkal. Az aktuálisan legpontosabb modell automatikusan nagyobb súlyt kap a számítás során.
+        <span class="tech-header">1. Dinamikus Súlyozás</span>
+        A rendszer minden indításkor elvégzi a modellek validációját a tegnapi tényadatok alapján.
         
-        <span class="tech-header">2. Rácsháló és Felbontás</span>
-        Magyarország területét lefedő $0.15^{\circ} \\times 0.18^{\circ}$ felbontású rácsháló alapján történik a kalkuláció az <b>Open-Meteo</b> aggregált modelljeivel.
-        
-        <span class="tech-header">3. Éghajlati Nap</span>
-        A WMO meteorológiai szabvány szerint a napi szélsőértékek 18:00 UTC és a következő nap 18:00 UTC között értendők.
+        <span class="tech-header">2. Rácsháló</span>
+        0.15° felbontású rácsháló Magyarország területén.
     </div>
     """, unsafe_allow_html=True)
     
     st.write("---")
-    st.write("**Aktuális modell súlyok:**")
-    w_df = pd.DataFrame({
-        "Modell": ["ECMWF", "GFS", "ICON"], 
-        "Súly": [current_weights[m]*100 for m in ["ecmwf_ifs", "gfs_seamless", "icon_seamless"]]
-    })
-    fig_p = px.pie(w_df, values='Súly', names='Modell', hole=0.5, color_discrete_sequence=px.colors.sequential.Teal)
-    fig_p.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=250, showlegend=True, legend=dict(orientation="h", y=-0.1))
-    st.plotly_chart(fig_p, use_container_width=True)
+    st.write("**Modell súlyok:**")
+    w_df = pd.DataFrame({"Modell": ["ECMWF", "GFS", "ICON"], "Súly": [current_weights[m]*100 for m in ["ecmwf_ifs", "gfs_seamless", "icon_seamless"]]})
+    st.plotly_chart(px.pie(w_df, values='Súly', names='Modell', hole=0.5).update_layout(margin=dict(t=0, b=0, l=0, r=0), height=250), use_container_width=True)
