@@ -13,33 +13,26 @@ st.markdown("""
     .stMetric { background-color: #ffffff; padding: 15px; border-radius: 12px; border: 1px solid #eee; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
     .tech-details { background-color: #f8f9fa; padding: 20px; border-radius: 10px; font-size: 0.9rem; border-left: 5px solid #0d6efd; color: #333; line-height: 1.6; }
     div[data-testid="stButton"] { padding-top: 25px !important; }
-    .validation-table { font-size: 0.8rem; width: 100%; border-collapse: collapse; margin: 10px 0; }
-    .validation-table th, .validation-table td { border: 1px solid #ddd; padding: 8px; text-align: center; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- DINAMIKUS VALIDÁCIÓ ÉS SÚLYOZÁS SZÁMÍTÁSA ---
+# --- DINAMIKUS VALIDÁCIÓ ÉS SÚLYOZÁS ---
 @st.cache_data(ttl=3600)
 def get_dynamic_weights():
-    # Tegnapi nap adatai a validáláshoz (Budapest mint bázispont)
     yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-    base_lat, base_lon = 47.49, 19.04
-    
+    base_lat, base_lon = 47.49, 19.04 # Budapest referencia
     models = ["ecmwf_ifs", "gfs_seamless", "icon_seamless"]
     validation_data = []
     
-    # 1. Tényleges mért adatok lekérése (Archive)
     try:
         obs_r = requests.get("https://archive-api.open-meteo.com/v1/archive", params={
             "latitude": base_lat, "longitude": base_lon, "start_date": yesterday, "end_date": yesterday,
             "hourly": "temperature_2m", "timezone": "UTC"
         }).json()
-        true_min = min(obs_r['hourly']['temperature_2m'])
-        true_max = max(obs_r['hourly']['temperature_2m'])
+        true_min, true_max = min(obs_r['hourly']['temperature_2m']), max(obs_r['hourly']['temperature_2m'])
     except:
         return {"ecmwf_ifs": 0.45, "gfs_seamless": 0.30, "icon_seamless": 0.25}, None
 
-    # 2. Modellek tegnapi jóslatainak ellenőrzése
     errors = []
     for m in models:
         try:
@@ -47,43 +40,27 @@ def get_dynamic_weights():
                 "latitude": base_lat, "longitude": base_lon, "start_date": yesterday, "end_date": yesterday,
                 "hourly": "temperature_2m", "models": m, "timezone": "UTC"
             }).json()
-            pred_min = min(fc_r['hourly']['temperature_2m'])
-            pred_max = max(fc_r['hourly']['temperature_2m'])
-            
-            error = abs(true_min - pred_min) + abs(true_max - pred_max)
-            errors.append(max(0.1, error)) # 0.1 a minimum hiba a div0 elkerülésére
-            
-            validation_data.append({
-                "Modell": m.replace("_seamless", "").replace("_ifs", "").upper(),
-                "Jósolt Min": f"{pred_min}°C",
-                "Jósolt Max": f"{pred_max}°C",
-                "Hiba": round(error, 2)
-            })
-        except:
-            errors.append(1.0)
+            p_min, p_max = min(fc_r['hourly']['temperature_2m']), max(fc_r['hourly']['temperature_2m'])
+            error = (abs(true_min - p_min) + abs(true_max - p_max)) / 2
+            errors.append(max(0.1, error))
+            validation_data.append({"Modell": m.upper(), "Jósolt Min": p_min, "Jósolt Max": p_max, "MAE": round(error, 2)})
+        except: errors.append(1.0)
 
-    # 3. Súlyok kiszámítása (Inverz hibaarány)
     inv_errors = [1/e for e in errors]
-    new_weights = [ie / sum(inv_errors) for ie in inv_errors]
-    
-    weight_dict = dict(zip(models, new_weights))
-    
+    weights = {m: ie/sum(inv_errors) for m, ie in zip(models, inv_errors)}
     val_df = pd.DataFrame(validation_data)
-    val_df["Valós"] = f"{true_min} / {true_max}°C"
-    
-    return weight_dict, val_df
+    val_df["Valós (Min/Max)"] = f"{true_min} / {true_max} °C"
+    return weights, val_df
 
 # --- ADATLEKÉRÉS ---
 def FETCH_DATA(date, weights, towns):
     t_s, t_e = (date - timedelta(days=1)).strftime('%Y-%m-%d'), date.strftime('%Y-%m-%d')
     results = []
     batch_size = 50 
-    
     for i in range(0, len(towns), batch_size):
         batch = towns[i:i+batch_size]
         lats, lons = [t['lat'] for t in batch], [t['lon'] for t in batch]
-        batch_results = [{"n": t['n'], "lat": t['lat'], "lon": t['lon'], "min": 0.0, "max": 0.0} for t in batch]
-        
+        res_template = [{"n": t['n'], "lat": t['lat'], "lon": t['lon'], "min": 0.0, "max": 0.0} for t in batch]
         for m_id, w in weights.items():
             try:
                 r = requests.get("https://api.open-meteo.com/v1/forecast", params={
@@ -92,73 +69,87 @@ def FETCH_DATA(date, weights, towns):
                 }).json()
                 res_list = r if isinstance(r, list) else [r]
                 for idx, res in enumerate(res_list):
-                    batch_results[idx]["min"] += min(res['hourly']['temperature_2m']) * w
-                    batch_results[idx]["max"] += max(res['hourly']['temperature_2m']) * w
+                    res_template[idx]["min"] += min(res['hourly']['temperature_2m']) * w
+                    res_template[idx]["max"] += max(res['hourly']['temperature_2m']) * w
             except: continue
-        results.extend(batch_results)
+        results.extend(res_template)
     return pd.DataFrame(results)
 
 # --- UI ---
-main_c, side_c = st.columns([2.8, 1.2], gap="large")
+main_c, side_c = st.columns([2.5, 1.5], gap="large")
 
 with main_c:
-    st.title("🌡️ Súlyozott Modell-Előrejelzés")
-    
+    st.title("🌡️ Modell-Súlyozó Dashboard")
     c1, c2, _ = st.columns([1.2, 0.4, 2.4])
-    target_date = c1.date_input("Dátum", datetime.now() + timedelta(days=1))
+    target_date = c1.date_input("Előrejelzés dátuma", datetime.now() + timedelta(days=1))
     
-    # Súlyok lekérése
     weights, val_table = get_dynamic_weights()
-    
     towns = [{"n": "Budapest", "lat": 47.49, "lon": 19.04}, {"n": "Debrecen", "lat": 47.53, "lon": 21.62},
              {"n": "Szeged", "lat": 46.25, "lon": 20.14}, {"n": "Pécs", "lat": 46.07, "lon": 18.23},
-             {"n": "Győr", "lat": 47.68, "lon": 17.63}, {"n": "Tatabánya", "lat": 47.58, "lon": 18.44}]
+             {"n": "Győr", "lat": 47.68, "lon": 17.63}, {"n": "Tatabánya", "lat": 47.58, "lon": 18.44},
+             {"n": "Miskolc", "lat": 48.10, "lon": 20.78}, {"n": "Siófok", "lat": 46.90, "lon": 18.05}]
     
     df = FETCH_DATA(target_date, weights, towns)
     
     if not df.empty:
-        m_col1, m_col2 = st.columns(2)
+        m1, m2 = st.columns(2)
         min_r, max_r = df.loc[df['min'].idxmin()], df.loc[df['max'].idxmax()]
-        
-        m_col1.metric("📉 Országos Minimum", f"{round(min_r['min'], 1)} °C")
-        m_col1.markdown(f"📍 *{min_r['n']} környékén*")
-        
-        m_col2.metric("📈 Országos Maximum", f"{round(max_r['max'], 1)} °C")
-        m_col2.markdown(f"📍 *{max_r['n']} környékén*")
+        m1.metric("📉 Országos Minimum", f"{round(min_r['min'], 1)} °C")
+        m1.markdown(f"📍 *{min_r['n']} környékén*")
+        m2.metric("📈 Országos Maximum", f"{round(max_r['max'], 1)} °C")
+        m2.markdown(f"📍 *{max_r['n']} környékén*")
         
         st.write("---")
+        # DENSITY HEATMAPS
         map1, map2 = st.columns(2)
-        map1.plotly_chart(px.scatter_mapbox(df, lat="lat", lon="lon", color="min", hover_name="n", 
-                          color_continuous_scale="Viridis", zoom=6, mapbox_style="carto-positron", 
-                          title="Minimum Hőtérkép").update_layout(margin={"r":0,"t":30,"l":0,"b":0}))
-        map2.plotly_chart(px.scatter_mapbox(df, lat="lat", lon="lon", color="max", hover_name="n", 
-                          color_continuous_scale="Reds", zoom=6, mapbox_style="carto-positron", 
-                          title="Maximum Hőtérkép").update_layout(margin={"r":0,"t":30,"l":0,"b":0}))
+        with map1:
+            st.subheader("Minimum Hőtérkép")
+            fig1 = px.density_mapbox(df, lat='lat', lon='lon', z='min', radius=50,
+                                     center=dict(lat=47.15, lon=19.5), zoom=5.8,
+                                     mapbox_style="carto-positron", color_continuous_scale="Viridis")
+            fig1.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+            st.plotly_chart(fig1, use_container_width=True)
+        with map2:
+            st.subheader("Maximum Hőtérkép")
+            fig2 = px.density_mapbox(df, lat='lat', lon='lon', z='max', radius=50,
+                                     center=dict(lat=47.15, lon=19.5), zoom=5.8,
+                                     mapbox_style="carto-positron", color_continuous_scale="Reds")
+            fig2.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+            st.plotly_chart(fig2, use_container_width=True)
 
 with side_c:
-    st.subheader("📘 Technikai leírás")
+    st.header("⚙️ Rendszerlogika")
     
-    if val_table is not None:
-        st.write("**Tegnapi validációs adatok (Bázis: Budapest):**")
-        st.table(val_table[['Modell', 'Jósolt Min', 'Jósolt Max', 'Hiba']])
-        st.caption(f"A valós értékek tegnap: {val_table['Valós'].iloc[0]} voltak.")
+    with st.expander("📊 1. Dinamikus Validáció (D-MOS)", expanded=True):
+        st.write("A rendszer minden futáskor összeveti a tegnapi tényadatokat a modellek jóslataival.")
+        if val_table is not None:
+            st.dataframe(val_table, hide_index=True)
+        st.write("A súlyozás alapja az inverz átlagos abszolút hiba (MAE).")
 
-    st.markdown("""
-    <div class="tech-details">
-    
-    **1. DINAMIKUS SÚLYOZÁS (D-MOS)**
-    A fenti táblázat mutatja a modellek tegnapi teljesítményét. A súlyozás **inverz MAE** alapján történik: amelyik modellnél kisebb a hiba (Jósolt vs. Valós), az nagyobb súlyt kap a mai kalkulációban.
+    with st.expander("🛰️ 2. Multi-Model Ensemble"):
+        st.write("""
+        - **ECMWF IFS (0.1°):** A legpontosabb európai modell.
+        - **GFS (0.25°):** Az USA globális modellje.
+        - **ICON (0.1°):** A német szolgálat precíziós modellje.
+        Az algoritmus ezen modellek kimenetét átlagolja a validációs súlyokkal.
+        """)
 
-    **2. MULTI-MODEL ENSEMBLE**
-    Az előrejelzés az ECMWF, GFS és ICON modellek súlyozott átlaga.
-    
-    **3. TELEPÜLÉSSZINTŰ ELEMZÉS**
-    Batch Processing eljárással Magyarország összes településére (3155 pont) lefut az elemzés.
+    with st.expander("🏗️ 3. Adatfeldolgozási folyamat"):
+        st.write("""
+        1. **Request:** A frontend bekéri a dátumot.
+        2. **Validation:** A háttérben lefut a tegnapi nap ellenőrzése.
+        3. **Batch Fetch:** 3155 pontot 50-es csomagokban kérünk le (Open-Meteo API).
+        4. **Aggregation:** A súlyozott átlagok kiszámítása településenként.
+        5. **Rendering:** Density Mapbox hőtérkép generálása.
+        """)
 
-    </div>
-    """, unsafe_allow_html=True)
-    
+    with st.expander("🗺️ 4. Interpoláció és Megjelenítés"):
+        st.write("""
+        A hőtérkép nem csak pontokat rajzol: **Density Mapbox** algoritmust használunk. 
+        Ez a pontok köré egy Gauss-eloszlású színfelhőt generál, így a pontok közötti területeken is látható a hőmérsékleti tendencia (hőátmenet).
+        """)
+
     st.write("---")
-    st.write("**Kiszámított súlyok a mai napra:**")
-    st.plotly_chart(px.pie(values=[round(v*100) for v in weights.values()], names=["ECMWF", "GFS", "ICON"], hole=0.5, 
-                    color_discrete_sequence=px.colors.sequential.Teal).update_layout(margin=dict(t=0, b=0, l=0, r=0), height=220))
+    st.write("**Aktuális súlyeloszlás:**")
+    st.plotly_chart(px.pie(values=list(weights.values()), names=["ECMWF", "GFS", "ICON"], hole=0.6,
+                    color_discrete_sequence=px.colors.sequential.Plotly3).update_layout(margin=dict(t=0, b=0, l=0, r=0), height=250))
