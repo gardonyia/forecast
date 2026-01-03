@@ -1,6 +1,6 @@
-streamlit>=1.30
-requests>=2.31
-pandas>=2.0
-numpy>=1.25
-plotly>=5.18
-shapely>=2.0
+streamlit
+requests
+pandas
+numpy
+plotly
+shapely
