@@ -8,14 +8,14 @@ from datetime import datetime, timedelta
 from shapely.geometry import Point, Polygon
 
 # =========================
-# OLDAL BEÁLLÍTÁS
+# STREAMLIT PAGE
 # =========================
 st.set_page_config(
-    page_title="Magyarországi Súlyozott Hőmérséklet",
+    page_title="Magyarországi Modell-Súlyozott Előrejelzés",
     layout="wide"
 )
 
-st.title("🌡️ Súlyozott országos hőmérsékleti szélsőértékek")
+st.title("🌡️ Magyarországi Modell-Súlyozott Előrejelzés")
 
 # =========================
 # MAGYARORSZÁG POLIGON
@@ -45,10 +45,7 @@ CITIES = [
 ]
 
 def nearest_city(lat, lon):
-    d = [
-        ((c["lat"] - lat)**2 + (c["lon"] - lon)**2, c["n"])
-        for c in CITIES
-    ]
+    d = [((c["lat"]-lat)**2 + (c["lon"]-lon)**2, c["n"]) for c in CITIES]
     return min(d)[1]
 
 # =========================
@@ -61,19 +58,37 @@ MODELS = {
 }
 
 # =========================
-# RÁCSPONT GENERÁLÁS
+# BIZTONSÁGOS API HÍVÁS
 # =========================
+def safe_get_json(url, params):
+    try:
+        r = requests.get(url, params=params, timeout=10)
+
+        if r.status_code != 200:
+            return None
+
+        if "application/json" not in r.headers.get("Content-Type", ""):
+            return None
+
+        return r.json()
+
+    except Exception:
+        return None
+
+# =========================
+# RÁCSPONTOK
+# =========================
+@st.cache_data
 def generate_grid():
     lats = np.arange(45.8, 48.6, 0.25)
     lons = np.arange(16.2, 22.8, 0.35)
 
-    points = []
+    pts = []
     for lat in lats:
         for lon in lons:
             if HU_POLY.contains(Point(lon, lat)):
-                points.append((lat, lon))
-
-    return points
+                pts.append((lat, lon))
+    return pts
 
 GRID_POINTS = generate_grid()
 
@@ -89,48 +104,52 @@ def fetch_weighted_data(target_date):
 
     for lat, lon in GRID_POINTS:
         w_min, w_max = 0.0, 0.0
+        valid = False
 
         for model, weight in MODELS.items():
-            try:
-                r = requests.get(
-                    "https://api.open-meteo.com/v1/forecast",
-                    params={
-                        "latitude": lat,
-                        "longitude": lon,
-                        "hourly": "temperature_2m",
-                        "models": model,
-                        "start_hour": start,
-                        "end_hour": end,
-                        "timezone": "UTC"
-                    },
-                    timeout=10
-                ).json()
+            data = safe_get_json(
+                "https://api.open-meteo.com/v1/forecast",
+                {
+                    "latitude": lat,
+                    "longitude": lon,
+                    "hourly": "temperature_2m",
+                    "models": model,
+                    "start_hour": start,
+                    "end_hour": end,
+                    "timezone": "UTC"
+                }
+            )
 
-                temps = r["hourly"]["temperature_2m"]
-                w_min += min(temps) * weight
-                w_max += max(temps) * weight
-
-            except Exception:
+            if not data:
                 continue
 
-        rows.append({
-            "lat": lat,
-            "lon": lon,
-            "min": w_min,
-            "max": w_max
-        })
+            temps = data.get("hourly", {}).get("temperature_2m")
+            if not temps:
+                continue
+
+            w_min += min(temps) * weight
+            w_max += max(temps) * weight
+            valid = True
+
+        if valid:
+            rows.append({
+                "lat": lat,
+                "lon": lon,
+                "min": w_min,
+                "max": w_max
+            })
 
     return pd.DataFrame(rows)
 
 # =========================
 # SIDEBAR
 # =========================
-if st.sidebar.button("🔄 Cache törlése"):
+if st.sidebar.button("🔄 Minden adat frissítése (Hard Reset)"):
     st.cache_data.clear()
     st.rerun()
 
 target_date = st.sidebar.date_input(
-    "Előrejelzési nap",
+    "Előrejelzés napja",
     datetime.utcnow().date() + timedelta(days=1)
 )
 
@@ -141,7 +160,7 @@ with st.spinner("Adatok lekérése..."):
     df = fetch_weighted_data(target_date)
 
 if df.empty:
-    st.error("Nem érkezett adat.")
+    st.error("Nem érkezett feldolgozható adat az API-tól.")
     st.stop()
 
 # =========================
