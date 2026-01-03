@@ -20,9 +20,9 @@ HU_COORDS = [
 HU_POLY = Polygon(HU_COORDS)
 HU_LINE_LATS, HU_LINE_LONS = zip(*[(c[1], c[0]) for c in HU_COORDS])
 
-# VÁROSLISTA - Érd és a nagyobb települések
+# VÁROSLISTA - Érddel az élen
 CITIES = [
-    {"n": "Érd", "lat": 47.38, "lon": 18.91}, # Kiemelve az elejére
+    {"n": "Érd", "lat": 47.38, "lon": 18.91},
     {"n": "Budapest", "lat": 47.49, "lon": 19.04}, {"n": "Debrecen", "lat": 47.53, "lon": 21.62},
     {"n": "Szeged", "lat": 46.25, "lon": 20.14}, {"n": "Miskolc", "lat": 48.10, "lon": 20.78},
     {"n": "Pécs", "lat": 46.07, "lon": 18.23}, {"n": "Győr", "lat": 47.68, "lon": 17.63},
@@ -45,4 +45,6 @@ CITIES = [
     {"n": "Szentes", "lat": 46.65, "lon": 20.25}, {"n": "Kiskunhalas", "lat": 46.43, "lon": 19.48},
     {"n": "Dunaújváros", "lat": 46.96, "lon": 18.93}, {"n": "Siófok", "lat": 46.90, "lon": 18.05},
     {"n": "Paks", "lat": 46.62, "lon": 18.85}, {"n": "Hatvan", "lat": 47.66, "lon": 19.68},
-    {"n": "Keszthely", "
+    {"n": "Keszthely", "lat": 46.76, "lon": 17.24}, {"n": "Balassagyarmat", "lat": 48.07, "lon": 19.29},
+    {"n": "Szerencs", "lat": 48.16, "lon": 21.20}, {"n": "Sátoraljaújhely", "lat": 48.39, "lon": 21.65},
+    {"n": "Mezőtúr", "lat": 47.00, "lon": 20.61}, {"n": "Csong
