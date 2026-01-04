@@ -2,85 +2,108 @@ import streamlit as st
 import requests
 from datetime import datetime, timedelta
 
-# --- 1. PROFI METEOROLÓGIAI UI ---
-st.set_page_config(page_title="Met-Ensemble v36.0", layout="wide")
+# --- 1. UI DESIGN ---
+st.set_page_config(page_title="Met-ICON v38.0", layout="wide")
 st.markdown("""
     <style>
-    .stApp { background-color: #f8fafc; }
-    .result-card {
+    .stApp { background-color: #f1f5f9; }
+    .main-card {
         background: white; padding: 40px; border-radius: 20px;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.1); text-align: center;
-        border-top: 8px solid #1e3a8a;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.05); text-align: center;
+        border-top: 6px solid #0369a1;
     }
-    .temp-val { font-size: 6.5rem; font-weight: 950; letter-spacing: -5px; line-height: 1; color: #1e3a8a; }
-    .city-label { font-size: 1.8rem; font-weight: 700; color: #334155; margin-top: 10px; }
-    .time-alert { background: #fee2e2; color: #991b1b; padding: 8px 20px; border-radius: 10px; font-family: monospace; font-weight: 700; display: inline-block; margin-top: 15px; }
+    .temp-val { font-size: 6rem; font-weight: 900; color: #0369a1; letter-spacing: -3px; line-height: 1; }
+    .city-info { font-size: 1.8rem; font-weight: 700; color: #334155; margin-top: 10px; }
+    .badge { background: #e0f2fe; color: #0369a1; padding: 5px 15px; border-radius: 15px; font-weight: 700; font-family: monospace; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. MOTOR AZ OKOS SZEZON-KAPCSOLÓVAL ---
-def run_smart_scanner(target_date):
-    # OKOS SZEZON-KAPCSOLÓ: Téli hónapokban (dec, jan, feb) a kód kényszeríti a hajnali (03:00-08:00 UTC) 
-    # adatok prioritását, hogy ne ragadjon be az esti értékeknél.
-    is_winter = target_date.month in [12, 1, 2]
-    
+# --- 2. ICON-EU CORE ENGINE ---
+def run_icon_pure_scan(target_date):
+    # Településlista betöltése
     try:
         towns = requests.get("https://raw.githubusercontent.com/pentasid/hungary-cities-json/master/cities.json", timeout=10).json()
     except:
         towns = [{"name": "Budapest", "lat": 47.49, "lng": 19.04}]
 
+    # Időablak beállítása (18-18 UTC)
     target_dt = datetime.combine(target_date, datetime.min.time())
     start_utc = (target_dt - timedelta(days=1)).replace(hour=18)
     end_utc = target_dt.replace(hour=18)
     
     g_min = {"val": 100.0, "city": "N/A", "time": "N/A"}
+    g_max = {"val": -100.0, "city": "N/A", "time": "N/A"}
+    processed_count = 0
 
+    # Kötegelt lekérdezés az ICON-EU modellel
     for i in range(0, len(towns), 500):
         batch = towns[i:i+500]
-        lats, lons = [t['lat'] for t in batch], [t['lng'] for t in batch]
+        lats = [str(t['lat']) for t in batch]
+        lons = [str(t['lng']) for t in batch]
         
-        # JAVÍTÁS: A High-Resolution (HRES) ECMWF modellt kérjük le, nem a korlátozott ensemble-t!
-        url = (f"https://api.open-meteo.com/v1/forecast?latitude={','.join(map(str,lats))}&longitude={','.join(map(str,lons))}"
-               f"&hourly=temperature_2m&models=ecmwf_ifs"
+        # KIZÁRÓLAG ICON-EU MODELL
+        url = (f"https://api.open-meteo.com/v1/forecast?latitude={','.join(lats)}&longitude={','.join(lons)}"
+               f"&hourly=temperature_2m&models=icon_eu"
                f"&start_date={start_utc.strftime('%Y-%m-%d')}&end_date={end_utc.strftime('%Y-%m-%d')}&timezone=UTC")
         
         try:
             res = requests.get(url).json()
             res_list = res if isinstance(res, list) else [res]
+            
             for idx, r in enumerate(res_list):
                 hourly = r.get('hourly', {})
-                for t_idx, val in enumerate(hourly.get('temperature_2m', [])):
-                    curr_t = datetime.fromisoformat(hourly['time'][t_idx])
-                    if start_utc <= curr_t <= end_utc:
-                        # Globális minimum keresése a teljes 18-18 UTC ablakban
-                        if val < g_min["val"]:
-                            g_min = {"val": val, "city": batch[idx]['name'], "time": hourly['time'][t_idx]}
-        except: continue
-    return g_min, is_winter
+                times = hourly.get('time', [])
+                temps = hourly.get('temperature_2m_icon_eu', []) # ICON-EU specifikus kulcs
+                
+                if temps:
+                    processed_count += 1
+                    for t_idx, val in enumerate(temps):
+                        if val is None: continue
+                        curr_t = datetime.fromisoformat(times[t_idx])
+                        
+                        if start_utc <= curr_t <= end_utc:
+                            if val < g_min["val"]:
+                                g_min = {"val": val, "city": batch[idx]['name'], "time": times[t_idx]}
+                            if val > g_max["val"]:
+                                g_max = {"val": val, "city": batch[idx]['name'], "time": times[t_idx]}
+        except:
+            continue
 
-# --- 3. UI DASHBOARD ---
-st.title("ECMWF Extreme Scanner v36.0")
+    return g_min, g_max, processed_count
 
-target_day = st.date_input("Válasszon dátumot:", value=datetime(2026, 1, 9))
+# --- 3. UI ---
+st.title("ICON-EU Magyarországi Szélsőérték Szkenner")
+st.info("Ez a verzió kizárólag a német ICON-EU modell adatait használja, mindenféle szezonális korrekció nélkül.")
 
-if st.button("ORSZÁGOS MÉLY-SZKENNELÉS INDÍTÁSA"):
-    with st.spinner("Mély-analízis folyamatban..."):
-        result, winter_mode = run_smart_scanner(target_day)
+target_day = st.date_input("Válasszon dátumot (január 9 javasolt):", value=datetime(2026, 1, 9))
 
-    if winter_mode:
-        st.sidebar.info("❄️ Okos szezon-kapcsoló: TÉLI ÜZEMMÓD AKTÍV")
+if st.button("TELJES ORSZÁGOS ICON-EU ANALÍZIS"):
+    with st.spinner("3155 település ICON-EU adatainak lekérése..."):
+        n_min, n_max, count = run_icon_pure_scan(target_day)
 
-    st.markdown(f"""
-        <div class="result-card">
-            <div style="font-weight:800; text-transform:uppercase; color:#64748b; letter-spacing:1px;">Országos Minimum (Abszolút)</div>
-            <div class="temp-val">{round(result['val'], 1)} °C</div>
-            <div class="city-label">📍 {result['city']}</div>
-            <div class="time-alert">Mért időpont: {result['time'].replace('T', ' ')} UTC</div>
-        </div>
-    """, unsafe_allow_html=True)
+    st.write(f"Sikeresen feldolgozott települések száma: **{count}**")
 
-    # Validáció: ha még mindig este lenne a minimum, jelezzük
-    if "22:00" in result['time']:
-        st.error("A rendszer esti minimumot talált. A reggeli beszakadás elmaradt vagy az API korlátozott.")
-    else:
-        st.success("A szkenner sikeresen rögzítette a reggeli lehűlési görbe mélypontját.")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown(f"""
+            <div class="main-card">
+                <div style="font-weight:800; color:#64748b; text-transform:uppercase;">ICON-EU Országos Minimum</div>
+                <div class="temp-val">{round(n_min['val'], 1)} °C</div>
+                <div class="city-info">📍 {n_min['city']}</div>
+                <div style="margin-top:15px;"><span class="badge">{n_min['time'].replace('T', ' ')} UTC</span></div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    with col2:
+        st.markdown(f"""
+            <div class="main-card" style="border-top-color:#be123c;">
+                <div style="font-weight:800; color:#64748b; text-transform:uppercase;">ICON-EU Országos Maximum</div>
+                <div class="temp-val" style="color:#be123c;">{round(n_max['val'], 1)} °C</div>
+                <div class="city-info">📍 {n_max['city']}</div>
+                <div style="margin-top:15px;"><span class="badge" style="background:#fff1f2; color:#be123c;">{n_max['time'].replace('T', ' ')} UTC</span></div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    if count < 3000:
+        st.warning("Néhány településnél nem állt rendelkezésre ICON-EU adat, de az összesített szélsőértékek a rendelkezésre álló adatokból készültek.")
