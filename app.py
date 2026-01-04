@@ -2,81 +2,81 @@ import streamlit as st
 import requests
 import pandas as pd
 import numpy as np
-import plotly.express as px
 from datetime import datetime, timedelta
 
 # --- 1. UI ÉS UX KONFIGURÁCIÓ ---
-st.set_page_config(page_title="Met-Ensemble Pro v14.0", layout="wide", page_icon="🌡️")
+st.set_page_config(page_title="Met-Ensemble v17.0", layout="wide", page_icon="🌡️")
 
 st.markdown("""
     <style>
-    /* Modern kártya és háttér stílus */
-    .stApp { background-color: #f1f5f9; }
-    .main .block-container { max-width: 1200px; padding-top: 2rem; }
+    /* Letisztult, modern háttér és betűtípus */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
     
-    .metric-card {
-        background-color: #ffffff;
-        padding: 25px;
-        border-radius: 15px;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.05);
-        text-align: center;
-        border-bottom: 5px solid #3b82f6;
-    }
-    .metric-val { font-size: 3rem; font-weight: 800; margin: 10px 0; }
-    .metric-loc { font-size: 1.1rem; color: #64748b; font-weight: 500; }
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+    .stApp { background-color: #f8fafc; }
+    .main .block-container { max-width: 900px; padding-top: 1.5rem; }
     
-    .doc-section {
-        background-color: #ffffff;
+    /* Kompakt, elegáns kártyák */
+    .mini-card {
+        background: white;
         padding: 20px;
         border-radius: 12px;
-        margin-bottom: 15px;
-        border-left: 5px solid #0f172a;
+        border: 1px solid #e2e8f0;
+        text-align: center;
+        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
     }
-    .doc-header { font-weight: 700; color: #1e293b; text-transform: uppercase; font-size: 0.85rem; margin-bottom: 8px; display: block; }
-    .season-tag {
-        background-color: #dbeafe;
-        color: #1e40af;
+    .temp-val { font-size: 2.8rem; font-weight: 800; line-height: 1; margin: 8px 0; }
+    .loc-label { font-size: 0.8rem; color: #64748b; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+    
+    /* Szezon jelző pill */
+    .season-pill {
+        display: inline-block;
         padding: 4px 12px;
         border-radius: 20px;
-        font-size: 0.8rem;
-        font-weight: 600;
+        font-size: 0.7rem;
+        font-weight: 700;
+        background: #f1f5f9;
+        text-transform: uppercase;
     }
+    
+    /* Segéd stílusok */
+    .stExpander { border: none !important; box-shadow: none !important; background: transparent !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. LOGIKAI ENGINE (OKOS SZEZON-KAPCSOLÓVAL) ---
-
-def get_config(target_date):
-    month = target_date.month
-    # Okos szezon-kapcsoló
+# --- 2. OKOS SZEZON-KAPCSOLÓ LOGIKA ---
+def get_season_config(date):
+    month = date.month
+    # Okos szezon-kapcsoló (Tél: Nov-Márc)
     is_winter = month in [11, 12, 1, 2, 3]
     return {
         "is_winter": is_winter,
-        "mode": "TÉLI (Fagyzug Fókusz)" if is_winter else "NYÁRI (Hősziget Fókusz)",
-        "zabar_factor": -2.5, # Fix -2,5 fok
+        "mode_label": "TÉLI (Fagyzug Fókusz)" if is_winter else "NYÁRI (Hősziget Fókusz)",
+        "zabar_adj": -2.5, # Felhasználói kérésre fixált érték
         "threshold": -13 if is_winter else 18,
-        "color": "#2563eb" if is_winter else "#dc2626"
+        "theme_color": "#1e40af" if is_winter else "#e11d48"
     }
 
-def run_analysis(target_date, config):
-    # Statikus, megbízható súlyozás a korábbi API hibák elkerülésére
+# --- 3. ANALÍZIS ENGINE ---
+def run_ensemble_analysis(date, cfg):
+    # Rögzített súlyozás a pontosság érdekében
     weights = {"ecmwf_ifs": 0.45, "icon_eu": 0.35, "gfs_seamless": 0.20}
     
     try:
-        r = requests.get("https://raw.githubusercontent.com/pentasid/hungary-cities-json/master/cities.json", timeout=5)
-        towns = r.json()
+        # 3155 magyar település betöltése
+        towns = requests.get("https://raw.githubusercontent.com/pentasid/hungary-cities-json/master/cities.json", timeout=5).json()
     except:
-        towns = [{"name": "Budapest", "lat": 47.49, "lng": 19.04}, {"name": "Zabar", "lat": 48.15, "lng": 20.25}]
+        towns = [{"name": "Zabar", "lat": 48.15, "lng": 20.25}, {"name": "Budapest", "lat": 47.49, "lng": 19.04}]
 
-    t_s, t_e = (target_date - timedelta(days=1)).strftime('%Y-%m-%d'), target_date.strftime('%Y-%m-%d')
-    final_data = []
+    t_s, t_e = (date - timedelta(days=1)).strftime('%Y-%m-%d'), date.strftime('%Y-%m-%d')
+    all_results = []
 
-    # Kötegelt feldolgozás (500-asával) a sebességért
-    for i in range(0, len(towns), 500):
-        batch = towns[i:i+500]
-        lats, lons = [t.get('lat', 47) for t in batch], [t.get('lng', 19) for t in batch]
+    # Kötegelt feldolgozás a hatékonyságért
+    for i in range(0, len(towns), 1000):
+        batch = towns[i:i+1000]
+        lats, lons = [t['lat'] for t in batch], [t['lng'] for t in batch]
         df = pd.DataFrame([{"n": t['name'], "min": 0.0, "max": 0.0} for t in batch])
-        raw_mins = []
+        model_mins = []
 
         for m_id, w in weights.items():
             try:
@@ -84,116 +84,98 @@ def run_analysis(target_date, config):
                 res = requests.get(url).json()
                 res_list = res if isinstance(res, list) else [res]
                 
-                m_batch = []
+                m_batch_mins = []
                 for idx, r in enumerate(res_list):
-                    temps = [t for t in r.get('hourly', {}).get('temperature_2m', []) if t is not None]
-                    if temps:
-                        df.at[idx, "min"] += min(temps) * w
-                        df.at[idx, "max"] += max(temps) * w
-                        m_batch.append(min(temps))
-                    else: m_batch.append(None)
-                raw_mins.append(m_batch)
-            except: raw_mins.append([None]*len(batch))
+                    t_data = r.get('hourly', {}).get('temperature_2m', [])
+                    if t_data:
+                        valid_t = [t for t in t_data if t is not None]
+                        if valid_t:
+                            m_min = min(valid_t)
+                            df.at[idx, "min"] += m_min * w
+                            df.at[idx, "max"] += max(valid_t) * w
+                            m_batch_mins.append(m_min)
+                        else: m_batch_mins.append(None)
+                    else: m_batch_mins.append(None)
+                model_mins.append(m_batch_mins)
+            except: model_mins.append([None]*len(batch))
 
-        # --- FAGYZUG ÉS SZEZONÁLIS KORREKCIÓ ---
+        # --- EXTRÉM KORREKCIÓS MODUL ---
         for idx in range(len(df)):
-            valid = [m[idx] for m in raw_mins if idx < len(m) and m[idx] is not None]
+            valid = [m[idx] for m in model_mins if idx < len(m) and m[idx] is not None]
             if valid:
                 abs_min = min(valid)
-                if config["is_winter"]:
-                    # Agresszívabb inverziós súlyozás, ha hideg van
-                    if abs_min < -7:
-                        df.at[idx, "min"] = (df.at[idx, "min"] * 0.2) + (abs_min * 0.8)
-                    # Zabar-faktor alkalmazása
-                    if abs_min < config["threshold"]:
-                        df.at[idx, "min"] += config["zabar_factor"]
+                if cfg["is_winter"]:
+                    # Cold-Bias: Ha egy modell látja a beszakadást, 90%-ban azt követjük
+                    if abs_min < (df.at[idx, "min"] - 2.0):
+                        df.at[idx, "min"] = (df.at[idx, "min"] * 0.1) + (abs_min * 0.9)
+                    # Zabar-faktor: Fix -2.5 fok
+                    if abs_min < cfg["threshold"]:
+                        df.at[idx, "min"] += cfg["zabar_adj"]
                 else:
                     # Nyári hősziget korrekció
-                    if abs_min > config["threshold"]:
-                        df.at[idx, "min"] += 2.2 # UHI faktor
+                    if df.at[idx, "min"] > cfg["threshold"]:
+                        df.at[idx, "min"] += 2.2
         
-        final_data.append(df)
+        all_results.append(df)
     
-    return pd.concat(final_data), weights
+    return pd.concat(all_results)
 
-# --- 3. DASHBOARD UI ---
+# --- 4. DASHBOARD FELÜLET ---
+header_left, header_right = st.columns([1, 1])
 
-st.title("🌡️ Met-Ensemble Pro v14.0")
-st.markdown("---")
+with header_left:
+    st.title("Met-Ensemble Pro")
+    target_date = st.date_input("Előrejelzés dátuma", value=datetime(2026, 1, 9))
+    cfg = get_season_config(target_date)
 
-# Oldalsáv helyett felső vezérlő
-c_date, c_info = st.columns([1, 2])
-with c_date:
-    target_date = st.date_input("Előrejelzési dátum:", value=datetime.now().date() + timedelta(days=1))
-    config = get_config(target_date)
-with c_info:
-    st.markdown(f"<br><span class='season-tag'>{config['mode']} aktív</span>", unsafe_allow_html=True)
-
-# Számítás futtatása
-with st.spinner("Nemzeti adatbázis analizálása..."):
-    results, weights = run_analysis(target_date, config)
-    res_min = results.loc[results['min'].idxmin()]
-    res_max = results.loc[results['max'].idxmax()]
-
-# --- FŐ KIJELZŐK ---
-st.markdown("<br>", unsafe_allow_html=True)
-col1, col2 = st.columns(2, gap="large")
-
-with col1:
+with header_right:
     st.markdown(f"""
-        <div class="metric-card" style="border-bottom-color: #1e40af;">
-            <span class="doc-header">Országos Minimum</span>
-            <div class="metric-val" style="color: #1e40af;">{round(res_min['min'], 1)} °C</div>
-            <div class="metric-loc">📍 {res_min['n']}</div>
+        <div style='text-align:right; padding-top:60px;'>
+            <span class='season-pill' style='color:{cfg['theme_color']}; border: 1px solid {cfg['theme_color']}'>
+                {cfg['mode_label']} Aktív
+            </span>
         </div>
     """, unsafe_allow_html=True)
 
-with col2:
+st.write("---")
+
+# Számítás
+with st.spinner("Modellek szinkronizálása..."):
+    data = run_ensemble_analysis(target_date, cfg)
+    res_min = data.loc[data['min'].idxmin()]
+    res_max = data.loc[data['max'].idxmax()]
+
+# Fő értékek
+col_min, col_max = st.columns(2)
+
+with col_min:
     st.markdown(f"""
-        <div class="metric-card" style="border-bottom-color: #dc2626;">
-            <span class="doc-header">Országos Maximum</span>
-            <div class="metric-val" style="color: #dc2626;">{round(res_max['max'], 1)} °C</div>
-            <div class="metric-loc">📍 {res_max['n']}</div>
+        <div class="mini-card">
+            <div class="loc-label">Országos Minimum</div>
+            <div class="temp-val" style="color:{cfg['theme_color']}">{round(res_min['min'], 1)} °C</div>
+            <div class="loc-label">📍 {res_min['n']}</div>
         </div>
     """, unsafe_allow_html=True)
 
-# --- TECHNIKAI DOKUMENTÁCIÓ ---
-st.markdown("<br><br><h3>⚙️ Részletes Technikai Dokumentáció</h3>", unsafe_allow_html=True)
-t1, t2 = st.columns([2, 1])
-
-with t1:
+with col_max:
     st.markdown(f"""
-    <div class="doc-section">
-        <span class="doc-header">1. Okos Szezon-kapcsoló</span>
-        A rendszer dinamikusan vált a téli és nyári algoritmusok között a célidőpont hónapja alapján. 
-        Télen a <b>Zabar-faktor (-2,5 °C)</b> és a völgy-inverzió, nyáron az <b>UHI (Hősziget) faktor</b> dominál.
-    </div>
-    <div class="doc-section">
-        <span class="doc-header">2. Dinamikus Fagyzug Algoritmus</span>
-        A téli félévben kétlépcsős korrekció fut:
-        <ul>
-            <li><b>-7 °C alatt:</b> A rendszer az átlagolás helyett 80%-os súlyt ad a leghidegebb modellnek.</li>
-            <li><b>-13 °C alatt:</b> Életbe lép a fix <b>-2,5 fokos Zabar-faktor</b>, ellensúlyozva a modellek domborzati pontatlanságát.</li>
-        </ul>
-    </div>
-    <div class="doc-section">
-        <span class="doc-header">3. MME Súlyozási Mátrix</span>
-        A korábbi validációs hibák kiküszöbölésére rögzített súlyozást használunk a rácsfelbontás alapján:
-        ECMWF (45%), ICON-EU (35%), GFS (20%). Ez stabilabb eredményt ad a januári szélsőségeknél.
-    </div>
-    """, unsafe_allow_html=True)
-
-with t2:
-    st.plotly_chart(px.pie(
-        values=list(weights.values()), 
-        names=["ECMWF", "ICON", "GFS"], 
-        hole=0.7,
-        color_discrete_sequence=["#1e40af", "#3b82f6", "#94a3b8"]
-    ).update_layout(showlegend=False, height=220, margin=dict(l=0,r=0,b=0,t=0)))
-    
-    st.markdown("""
-        <div style="text-align: center; color: #64748b; font-size: 0.8rem;">
-            <b>Modell súlyozás (%)</b><br>
-            Az adatok 3155 magyar településre vetített egyedi interpolációval készülnek.
+        <div class="mini-card">
+            <div class="loc-label">Országos Maximum</div>
+            <div class="temp-val" style="color:#e11d48">{round(res_max['max'], 1)} °C</div>
+            <div class="loc-label">📍 {res_max['n']}</div>
         </div>
     """, unsafe_allow_html=True)
+
+st.write("<br>", unsafe_allow_html=True)
+
+# --- TECHNIKAI DOKUMENTÁCIÓ (EXPANDER) ---
+with st.expander("⚙️ Technikai Dokumentáció (v17.0)"):
+    st.markdown(f"""
+    ### Módszertan és Korrekciók
+    * **Okos Szezon-kapcsoló:** A rendszer automatikusan vált téli (Fagyzug) és nyári (Hősziget) üzemmód között.
+    * **Zabar-faktor:** Téli üzemmódban, ha a minimum {cfg['threshold']} °C alá esik, fix **{cfg['zabar_adj']} °C** korrekciót alkalmazunk a domborzati torzítás ellensúlyozására.
+    * **Cold-Bias Algoritmus:** A MET.HU és az Ensemble közötti eltérés minimalizálása érdekében a rendszer 90%-os súllyal követi a leghidegebb modellt, ha az jelentősen eltér az átlagtól.
+    * **Adatforrások:** ECMWF IFS (45%), ICON-EU (35%), GFS (20%).
+    """)
+
+st.markdown("<div style='text-align:center; color:#94a3b8; font-size:0.7rem;'>Adatforrás: Open-Meteo API | Statisztikai Ensemble Modell v17.0</div>", unsafe_allow_html=True)
