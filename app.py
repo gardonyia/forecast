@@ -1,10 +1,11 @@
 import streamlit as st
 import requests
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 
 # --- 1. UX/UI KONFIGURÁCIÓ (V8 ALAPJÁN) ---
-st.set_page_config(page_title="Met-Ensemble Pro v19.0", layout="wide")
+st.set_page_config(page_title="Met-Ensemble v20.0", layout="wide")
 
 st.markdown("""
     <style>
@@ -12,129 +13,133 @@ st.markdown("""
     .result-card {
         background-color: #ffffff; padding: 30px; border-radius: 12px;
         box-shadow: 0 4px 15px rgba(0,0,0,0.05); text-align: center;
-        border: 1px solid #e2e8f0;
+        border: 1px solid #f1f5f9;
     }
-    .temp-display { font-size: 3.5rem; font-weight: 800; margin: 10px 0; }
-    .loc-text { font-size: 1.1rem; color: #64748b; }
-    .tech-section { background: #f8fafc; padding: 20px; border-radius: 8px; margin-top: 20px; border-left: 4px solid #1e40af; }
+    .temp-display { font-size: 3.8rem; font-weight: 900; margin: 10px 0; letter-spacing: -1px; }
+    .loc-text { font-size: 1.1rem; color: #64748b; font-weight: 600; }
+    .tech-log { 
+        background: #0f172a; color: #94a3b8; padding: 20px; 
+        border-radius: 8px; font-family: 'Courier New', monospace; font-size: 0.8rem;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. OKOS SZEZON-KAPCSOLÓ ÉS LOGIKA ---
-def get_config(target_date):
+# --- 2. SZEZONÁLIS ÉS TECHNIKAI LOGIKA ---
+def get_system_params(target_date):
     month = target_date.month
-    # Okos szezon-kapcsoló: Nov-Márc (téli mód)
+    # Okos szezon-kapcsoló beépítve a mentett utasítás alapján
     is_winter = month in [11, 12, 1, 2, 3]
     return {
         "is_winter": is_winter,
-        "mode": "TÉLI (Inverziós/Fagyzug)" if is_winter else "NYÁRI (Konvektív/UHI)",
-        "zabar_factor": -2.5,
-        "prob_percentile": "p10", # A legalsó 10% valószínűségi küszöb használata télen
+        "mode": "TÉLI (Extrém Fáklya-Alj)" if is_winter else "NYÁRI (Fáklya-Tető)",
+        "zabar_factor": -2.5, # Fix korrekció
         "threshold": -13
     }
 
-# --- 3. ECMWF VALÓSZÍNŰSÉGI ENGINE ---
-def run_ensemble(target_date, cfg):
+# --- 3. ECMWF ABSZOLÚT FÁKLYA MOTOR ---
+def run_absolute_plume_analysis(target_date, cfg):
     try:
+        # Teljes magyar településadatbázis
         towns = requests.get("https://raw.githubusercontent.com/pentasid/hungary-cities-json/master/cities.json", timeout=5).json()
     except:
         towns = [{"name": "Zabar", "lat": 48.15, "lng": 20.25}, {"name": "Budapest", "lat": 47.49, "lng": 19.04}]
 
+    # Időintervallum meghatározása
     t_start = (target_date - timedelta(days=1)).strftime('%Y-%m-%d')
     t_end = target_date.strftime('%Y-%m-%d')
     
-    results = []
+    final_data = []
     
-    # Kötegelt lekérdezés a teljes magyar adatbázisra (3155 település)
+    # Kötegelt feldolgozás (800 település / API hívás)
     for i in range(0, len(towns), 800):
         batch = towns[i:i+800]
         lats = [t['lat'] for t in batch]
         lons = [t['lng'] for t in batch]
         
-        # Probabilisztikus ECMWF lekérdezés (Ensemble statisztikák)
+        # Kizárólag az ECMWF valószínűségi (ensemble) adatok lekérése
         url = (f"https://api.open-meteo.com/v1/forecast?latitude={','.join(map(str,lats))}&longitude={','.join(map(str,lons))}"
                f"&hourly=temperature_2m&models=ecmwf_ifs&ensemble=true"
                f"&start_date={t_start}&end_date={t_end}&timezone=UTC")
         
         try:
             res = requests.get(url).json()
-            # Itt az összes ensemble tagot (members) lekérjük a szélsőértékhez
-            for idx, r in enumerate(res if isinstance(res, list) else [res]):
+            res_list = res if isinstance(res, list) else [res]
+            
+            for idx, r in enumerate(res_list):
                 hourly = r.get('hourly', {})
-                # Minden egyes tag (50+1 tag) minimumát nézzük meg az adott napon
-                members_mins = []
-                members_maxs = []
+                all_member_mins = []
+                all_member_maxs = []
                 
-                # Az API visszaadja a tagokat külön-külön
+                # Végigmegyünk az összes ensemble tagon (member00...member50)
                 for key, values in hourly.items():
                     if 'temperature_2m' in key and values:
-                        valid_v = [v for v in values if v is not None]
-                        if valid_v:
-                            members_mins.append(min(valid_v))
-                            members_maxs.append(max(valid_v))
+                        valid_temps = [v for v in values if v is not None]
+                        if valid_temps:
+                            all_member_mins.append(min(valid_temps))
+                            all_member_maxs.append(max(valid_temps))
                 
-                if members_mins:
-                    # TÉLI LOGIKA: Ha fagy van, a legalsó valószínűségi sávot (P10) használjuk
-                    if cfg["is_winter"]:
-                        final_min = np.percentile(members_mins, 10) # 10-es percentilis (fáklya alja)
-                        # Zabar-faktor korrekció
-                        if final_min < cfg["threshold"]:
-                            final_min += cfg["zabar_factor"]
-                    else:
-                        final_min = np.mean(members_mins) # Nyáron elég az átlag
+                if all_member_mins:
+                    # AZ ALJA A MINIMUM, A TETEJE A MAXIMUM
+                    abs_min = min(all_member_mins)
+                    abs_max = max(all_member_maxs)
+                    
+                    # Zabar-faktor és téli korrekció alkalmazása
+                    if cfg["is_winter"] and abs_min < cfg["threshold"]:
+                        abs_min += cfg["zabar_factor"]
                         
-                    results.append({
+                    final_data.append({
                         "n": batch[idx]['name'],
-                        "min": final_min,
-                        "max": np.max(members_maxs)
+                        "min": abs_min,
+                        "max": abs_max
                     })
         except: pass
 
-    return pd.DataFrame(results)
+    return pd.DataFrame(final_data)
 
-# --- 4. DASHBOARD ---
-st.title("Met-Ensemble Pro v19.0")
+# --- 4. INTERAKTÍV DASHBOARD ---
+st.title("Met-Ensemble Pro v20.0")
 
-# Interaktív dátumválasztó
-selected_date = st.date_input("Céldátum választása:", value=datetime(2026, 1, 9))
-cfg = get_config(selected_date)
+# Alapállás: Futtatás + 1 nap
+default_date = datetime.now() + timedelta(days=1)
+selected_date = st.date_input("Válasszon dátumot:", value=default_date)
+config = get_system_params(selected_date)
 
 st.write("---")
 
-with st.spinner(f"ECMWF Valószínűségi elemzés futtatása {len(results) if 'results' in locals() else '3155'} településre..."):
-    import numpy as np
-    data = run_ensemble(selected_date, cfg)
-    res_min = data.loc[data['min'].idxmin()]
-    res_max = data.loc[data['max'].idxmax()]
+with st.spinner(f"ECMWF Fáklya-szélsőértékek elemzése 3155 településre..."):
+    df_results = run_absolute_plume_analysis(selected_date, config)
+    res_min = df_results.loc[df_results['min'].idxmin()]
+    res_max = df_results.loc[df_results['max'].idxmax()]
 
-# UI Kártyák (v8 stílusban)
-c1, c2 = st.columns(2)
+# Megjelenítés kártyákon
+col_left, col_right = st.columns(2)
 
-with c1:
+with col_left:
     st.markdown(f"""
         <div class="result-card">
-            <div style="text-transform:uppercase; font-size:0.8rem; font-weight:700; color:#1e40af;">Országos Minimum</div>
+            <div style="text-transform:uppercase; font-size:0.8rem; font-weight:700; color:#1e40af;">Országos Minimum (Fáklya alja)</div>
             <div class="temp-display" style="color:#1e40af;">{round(res_min['min'], 1)} °C</div>
             <div class="loc-text">📍 {res_min['n']}</div>
         </div>
     """, unsafe_allow_html=True)
 
-with c2:
+with col_right:
     st.markdown(f"""
         <div class="result-card">
-            <div style="text-transform:uppercase; font-size:0.8rem; font-weight:700; color:#dc2626;">Országos Maximum</div>
+            <div style="text-transform:uppercase; font-size:0.8rem; font-weight:700; color:#dc2626;">Országos Maximum (Fáklya teteje)</div>
             <div class="temp-display" style="color:#dc2626;">{round(res_max['max'], 1)} °C</div>
             <div class="loc-text">📍 {res_max['n']}</div>
         </div>
     """, unsafe_allow_html=True)
 
 # --- 5. TECHNIKAI DOKUMENTÁCIÓ ---
+st.write("<br>", unsafe_allow_html=True)
 st.markdown(f"""
-    <div class="tech-section">
-        <strong>RÉSZLETES TECHNIKAI LEÍRÁS:</strong><br><br>
-        • <strong>Okos Szezon-kapcsoló:</strong> Automatikus váltás ({cfg['mode']}).<br>
-        • <strong>Valószínűségi Súlyozás:</strong> A program nem az ECMWF determinisztikus futását nézi, hanem az 51 tagú Ensemble (ENS) eloszlást. Télen a 10%-os valószínűségi küszöböt (P10) használja, ami az elméleti legfagyosabb forgatókönyvnek felel meg.<br>
-        • <strong>Zabar-faktor:</strong> Fix <strong>{cfg['zabar_factor']} °C</strong> degresszió alkalmazva {cfg['threshold']} °C alatti értékeknél.<br>
-        • <strong>Inverziós Modul:</strong> Aktív. A topográfiai beszorulást a percentilis alapú eltolás kezeli, így érhető el a reális -19 °C körüli érték.
+    <div class="tech-log">
+        <b>[VERSION]:</b> 20.0 Absolute Plume Edition<br>
+        <b>[OKOS SZEZON-KAPCSOLÓ]:</b> {config['mode']} aktív.<br>
+        <b>[METHOD]:</b> Kizárólagos ECMWF ENS szélsőérték-keresés (No-Average Logic).<br>
+        <b>[ZABAR_FACTOR]:</b> {config['zabar_factor']} °C alkalmazva {config['threshold']} °C alatt.<br>
+        <b>[DATE_CONTEXT]:</b> {selected_date.strftime('%Y-%m-%d')} elemzése az összes magyar település rácspontján.
     </div>
 """, unsafe_allow_html=True)
