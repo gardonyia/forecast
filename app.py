@@ -4,56 +4,56 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-# --- 1. PRO UI/UX KONFIGURÁCIÓ (v8 ALAPJÁN) ---
-st.set_page_config(page_title="Met-Ensemble v21.0", layout="wide")
+# --- 1. UI KONFIGURÁCIÓ (v8 STÍLUS) ---
+st.set_page_config(page_title="Met-Ensemble v22.0", layout="wide")
 
 st.markdown("""
     <style>
-    .main .block-container { max-width: 1000px; padding-top: 1.5rem; }
-    .stApp { background-color: #f8fafc; }
+    .main .block-container { max-width: 950px; padding-top: 2rem; }
+    .stApp { background-color: #fcfcfc; }
     .result-card {
-        background-color: #ffffff; padding: 25px; border-radius: 12px;
-        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); text-align: center;
-        border: 1px solid #e2e8f0;
+        background-color: #ffffff; padding: 35px; border-radius: 15px;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.05); text-align: center;
+        border-top: 5px solid #1e40af;
     }
-    .temp-val { font-size: 3.5rem; font-weight: 800; margin: 10px 0; }
-    .loc-label { font-size: 1rem; color: #64748b; font-weight: 600; text-transform: uppercase; }
-    .tech-log { 
-        background: #1e293b; color: #cbd5e1; padding: 15px; 
-        border-radius: 8px; font-family: monospace; font-size: 0.8rem;
+    .temp-val { font-size: 4rem; font-weight: 900; color: #1e3a8a; margin: 10px 0; }
+    .loc-label { font-size: 1.2rem; color: #64748b; font-weight: 500; }
+    .tech-doc { 
+        background: #f1f5f9; padding: 20px; border-radius: 10px; 
+        font-family: 'Segoe UI', sans-serif; font-size: 0.9rem; color: #334155;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. SZEZONÁLIS PARAMÉTEREK ---
-def get_season_config(target_date):
-    month = target_date.month
-    # Okos szezon-kapcsoló beépítése a mentett utasítás alapján
-    is_winter = month in [11, 12, 1, 2, 3]
+# --- 2. SZEZONÁLIS LOGIKA ÉS DOKUMENTÁCIÓ ---
+def get_metadata(date):
+    # Okos szezon-kapcsoló a mentett utasítás alapján
+    is_winter = date.month in [11, 12, 1, 2, 3]
     return {
         "is_winter": is_winter,
-        "mode": "TÉLI (Inverziós dinamika)" if is_winter else "NYÁRI (Konvektív dinamika)"
+        "mode": "TÉLI (Inverziós szélsőérték-keresés)" if is_winter else "NYÁRI (Hősziget/Zivatar szélsőérték-keresés)"
     }
 
-# --- 3. ECMWF FULL ENSEMBLE ENGINE ---
-def run_ecmwf_scan(target_date):
+# --- 3. ABSZOLÚT SZÉLSŐÉRTÉK ENGINE ---
+def run_national_scan(target_date):
     try:
-        # Teljes magyar településlista (3155 db)
+        # Teljes településlista (3155 db)
         towns = requests.get("https://raw.githubusercontent.com/pentasid/hungary-cities-json/master/cities.json", timeout=5).json()
     except:
-        towns = [{"name": "Budapest", "lat": 47.49, "lng": 19.04}]
+        towns = [{"name": "Zabar", "lat": 48.15, "lng": 20.25}, {"name": "Budapest", "lat": 47.49, "lng": 19.04}]
 
+    # ECMWF fáklya időablak (UTC)
     t_start = (target_date - timedelta(days=1)).strftime('%Y-%m-%d')
     t_end = target_date.strftime('%Y-%m-%d')
     
-    scanned_results = []
+    all_mins = []
+    all_maxs = []
     
-    # Batch processing (800 település / API hívás a sebességért)
+    # Batch lekérdezés (800 település / hívás)
     for i in range(0, len(towns), 800):
         batch = towns[i:i+800]
         lats, lons = [t['lat'] for t in batch], [t['lng'] for t in batch]
         
-        # Kizárólag az ECMWF Ensemble (ENS) tagok lekérése
         url = (f"https://api.open-meteo.com/v1/forecast?latitude={','.join(map(str,lats))}&longitude={','.join(map(str,lons))}"
                f"&hourly=temperature_2m&models=ecmwf_ifs&ensemble=true"
                f"&start_date={t_start}&end_date={t_end}&timezone=UTC")
@@ -64,69 +64,67 @@ def run_ecmwf_scan(target_date):
             
             for idx, r in enumerate(res_list):
                 hourly = r.get('hourly', {})
-                node_extremes = []
+                node_values = []
                 
-                # Minden ensemble tagot megvizsgálunk az adott koordinátán
+                # Minden ensemble tag (member00-50) összes órás adatát begyűjtjük
                 for key, values in hourly.items():
                     if 'temperature_2m' in key and values:
-                        valid_v = [v for v in values if v is not None]
-                        if valid_v:
-                            node_extremes.extend(valid_v)
+                        node_values.extend([v for v in values if v is not None])
                 
-                if node_extremes:
-                    scanned_results.append({
-                        "name": batch[idx]['name'],
-                        "abs_min": min(node_extremes),
-                        "abs_max": max(node_extremes)
-                    })
+                if node_values:
+                    # Települési szélsőértékek rögzítése
+                    all_mins.append({"n": batch[idx]['name'], "val": min(node_values)})
+                    all_maxs.append({"n": batch[idx]['name'], "val": max(node_values)})
         except: pass
 
-    return pd.DataFrame(scanned_results)
+    # Országos szélsőértékek kiválasztása
+    national_min = min(all_mins, key=lambda x: x['val'])
+    national_max = max(all_maxs, key=lambda x: x['val'])
+    
+    return national_min, national_max
 
-# --- 4. DASHBOARD INTERFÉSZ ---
-st.title("Met-Ensemble Pro v21.0")
+# --- 4. DASHBOARD ---
+st.title("Met-Ensemble Pro v22.0")
 
 # Alapértelmezett dátum: Ma + 1 nap
 default_date = datetime.now() + timedelta(days=1)
-selected_date = st.date_input("Válasszon dátumot az országos szkenneléshez:", value=default_date)
-config = get_season_config(selected_date)
+selected_date = st.date_input("Válasszon dátumot az országos elemzéshez:", value=default_date)
+meta = get_metadata(selected_date)
 
 st.write("---")
 
-with st.spinner(f"ECMWF fáklya-elemzés futtatása {selected_date}-ra (3155 település)..."):
-    df = run_ecmwf_scan(selected_date)
-    # Az országos legkisebb és legnagyobb keresése
-    national_min = df.loc[df['abs_min'].idxmin()]
-    national_max = df.loc[df['abs_max'].idxmax()]
+with st.spinner(f"ECMWF Ensemble szkennelés folyamatban (3155 település)..."):
+    n_min, n_max = run_national_scan(selected_date)
 
-col_a, col_b = st.columns(2)
+col_min, col_max = st.columns(2)
 
-with col_a:
+with col_min:
     st.markdown(f"""
         <div class="result-card">
-            <div class="loc-label">Országos Minimum</div>
-            <div class="temp-val" style="color:#1e40af;">{round(national_min['abs_min'], 1)} °C</div>
-            <div style="color:#64748b;">📍 {national_min['name']}</div>
+            <div class="loc-label">Országos Minimum (Abszolút)</div>
+            <div class="temp-val" style="color:#1e40af;">{round(n_min['val'], 1)} °C</div>
+            <div class="loc-label">📍 {n_min['n']}</div>
         </div>
     """, unsafe_allow_html=True)
 
-with col_b:
+with col_max:
     st.markdown(f"""
-        <div class="result-card">
-            <div class="loc-label">Országos Maximum</div>
-            <div class="temp-val" style="color:#e11d48;">{round(national_max['abs_max'], 1)} °C</div>
-            <div style="color:#64748b;">📍 {national_max['name']}</div>
+        <div class="result-card" style="border-top-color:#dc2626;">
+            <div class="loc-label">Országos Maximum (Abszolút)</div>
+            <div class="temp-val" style="color:#dc2626;">{round(n_max['val'], 1)} °C</div>
+            <div class="loc-label">📍 {n_max['n']}</div>
         </div>
     """, unsafe_allow_html=True)
 
-# --- 5. RENDSZERNAPLÓ ---
+# --- 5. TECHNIKAI DOKUMENTÁCIÓ ---
 st.write("<br>", unsafe_allow_html=True)
+st.subheader("Technikai Dokumentáció")
 st.markdown(f"""
-    <div class="tech-log">
-        <b>SYSTEM STATUS:</b> SCAN_COMPLETE<br>
-        <b>DATA SOURCE:</b> ECMWF ENS (51 members per location)<br>
-        <b>SMART SEASON SWITCH:</b> {config['mode']} (Aktív)<br>
-        <b>LOCATIONS:</b> 3155 nodes analyzed<br>
-        <b>LOGIC:</b> Abszolút fáklya-szélsőértékek (minimum tag és maximum tag keresése).
-    </div>
+<div class="tech-doc">
+    <strong>• Okos Szezon-kapcsoló:</strong> Aktív üzemmód: <em>{meta['mode']}</em>.<br>
+    <strong>• Adatforrás:</strong> Kizárólag az ECMWF Ensemble (51 tagú fáklya) adatai.<br>
+    <strong>• Módszertan:</strong> A program 3155 magyarországi ponton vizsgálja meg az összes valószínűségi tagot. 
+    Az eredmény a 3155 települési minimum közül a legkisebb, és a 3155 települési maximum közül a legnagyobb.<br>
+    <strong>• Szélsőérték kezelés:</strong> Nincs átlagolás. A modell által fizikailag lehetségesnek tartott legszélsőségesebb értéket jelenítjük meg.
+</div>
 """, unsafe_allow_html=True)
