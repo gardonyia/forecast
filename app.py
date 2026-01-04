@@ -3,43 +3,45 @@ import requests
 import pandas as pd
 from datetime import datetime, timedelta
 
-# --- 1. MINIMALISTA UI (v8 ALAPJÁN) ---
-st.set_page_config(page_title="Met-Ensemble v23.0", layout="wide")
+# --- 1. UI KONFIGURÁCIÓ (V8 STÍLUS) ---
+st.set_page_config(page_title="Met-Ensemble v24.0", layout="wide")
 
 st.markdown("""
     <style>
-    .main .block-container { max-width: 900px; padding-top: 1.5rem; }
+    .main .block-container { max-width: 950px; padding-top: 1.5rem; }
     .result-card {
-        background-color: #ffffff; padding: 25px; border-radius: 10px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.05); text-align: center;
-        border: 1px solid #e2e8f0; margin-bottom: 20px;
+        background-color: #ffffff; padding: 30px; border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08); text-align: center;
+        border: 1px solid #e2e8f0;
     }
-    .temp-val { font-size: 3.5rem; font-weight: 800; margin: 5px 0; letter-spacing: -2px; }
-    .label { font-size: 0.9rem; color: #64748b; font-weight: 600; text-transform: uppercase; }
-    .city { font-size: 1.1rem; color: #1e293b; font-weight: 500; }
+    .temp-val { font-size: 4rem; font-weight: 900; margin: 10px 0; }
+    .loc-text { font-size: 1.1rem; color: #64748b; font-weight: 600; text-transform: uppercase; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. PURE ECMWF ENGINE ---
-def run_pure_plume_scan(target_date):
-    # 3155 magyar település koordinátái
+# --- 2. ABSZOLÚT SZÉLSŐÉRTÉK MOTOR ---
+def run_absolute_scan(target_date):
+    # Teljes településadatbázis lekérése
     try:
         towns = requests.get("https://raw.githubusercontent.com/pentasid/hungary-cities-json/master/cities.json", timeout=5).json()
     except:
-        towns = [{"name": "Budapest", "lat": 47.49, "lng": 19.04}, {"name": "Zabar", "lat": 48.15, "lng": 20.25}]
+        towns = [{"name": "Budapest", "lat": 47.49, "lng": 19.04}]
 
-    # Időintervallum (a fáklya alapján az adott nap 24 órája)
+    # A fáklya-kép alapján az adott nap teljes 24 óráját nézzük
     t_start = (target_date - timedelta(days=1)).strftime('%Y-%m-%d')
     t_end = target_date.strftime('%Y-%m-%d')
     
-    all_node_extremes = []
+    global_min_val = 99.0
+    global_max_val = -99.0
+    min_city = ""
+    max_city = ""
 
-    # Batch hívások (800 település egyszerre)
+    # Batch processing (800 település / kérés)
     for i in range(0, len(towns), 800):
         batch = towns[i:i+800]
         lats, lons = [t['lat'] for t in batch], [t['lng'] for t in batch]
         
-        # Kizárólag ECMWF Ensemble (minden tag: member00-50)
+        # LEFONTOSABB: ensemble=true paraméterrel az összes (51) szálat lekérjük!
         url = (f"https://api.open-meteo.com/v1/forecast?latitude={','.join(map(str,lats))}&longitude={','.join(map(str,lons))}"
                f"&hourly=temperature_2m&models=ecmwf_ifs&ensemble=true"
                f"&start_date={t_start}&end_date={t_end}&timezone=UTC")
@@ -50,56 +52,53 @@ def run_pure_plume_scan(target_date):
             
             for idx, r in enumerate(res_list):
                 hourly = r.get('hourly', {})
-                member_values = []
-                
-                # Begyűjtjük az összes fáklya-szál (tag) értékét az adott napra
+                # Minden egyes fáklya-szál minden óráját végigpásztázzuk
                 for key, values in hourly.items():
                     if 'temperature_2m' in key and values:
-                        member_values.extend([v for v in values if v is not None])
-                
-                if member_values:
-                    all_node_extremes.append({
-                        "name": batch[idx]['name'],
-                        "min": min(member_values),
-                        "max": max(member_values)
-                    })
+                        valid_temps = [v for v in values if v is not None]
+                        if valid_temps:
+                            local_min = min(valid_temps)
+                            local_max = max(valid_temps)
+                            
+                            if local_min < global_min_val:
+                                global_min_val = local_min
+                                min_city = batch[idx]['name']
+                            if local_max > global_max_val:
+                                global_max_val = local_max
+                                max_city = batch[idx]['name']
         except: pass
 
-    # Országos szélsőértékek keresése (A 3155 minimum legkisebbje és a 3155 maximum legnagyobbja)
-    national_min = min(all_node_extremes, key=lambda x: x['min'])
-    national_max = max(all_node_extremes, key=lambda x: x['max'])
-    
-    return national_min, national_max
+    return {"name": min_city, "val": global_min_val}, {"name": max_city, "val": global_max_val}
 
-# --- 3. UI MEGJELENÍTÉS ---
-st.title("ECMWF Ensemble Scanner v23.0")
+# --- 3. DASHBOARD ---
+st.title("ECMWF Absolute Scanner v24.0")
 
-# Alapállás: Ma + 1 nap (Dátumválasztó)
-selected_date = st.date_input("Céldátum választása:", value=datetime.now() + timedelta(days=1))
+# Alapértelmezett dátum: 2026.01.09 (a beküldött kép alapján)
+selected_date = st.date_input("Céldátum választása:", value=datetime(2026, 1, 9))
 
 st.write("---")
 
-with st.spinner(f"Szélsőértékek kinyerése 3155 ECMWF fáklyából..."):
-    n_min, n_max = run_pure_plume_scan(selected_date)
+with st.spinner(f"Fáklya-szélsőértékek kinyerése 3155 ponton..."):
+    n_min, n_max = run_absolute_scan(selected_date)
 
 col1, col2 = st.columns(2)
 
 with col1:
     st.markdown(f"""
         <div class="result-card">
-            <div class="label">Országos Minimum (Fáklya alja)</div>
-            <div class="temp-val" style="color:#2563eb;">{round(n_min['min'], 1)} °C</div>
-            <div class="city">📍 {n_min['name']}</div>
+            <div class="loc-text">Országos Minimum (Abszolút Fáklya-alj)</div>
+            <div class="temp-val" style="color:#1e40af;">{round(n_min['val'], 1)} °C</div>
+            <div style="color:#64748b;">📍 {n_min['name']}</div>
         </div>
     """, unsafe_allow_html=True)
 
 with col2:
     st.markdown(f"""
         <div class="result-card">
-            <div class="label">Országos Maximum (Fáklya teteje)</div>
-            <div class="temp-val" style="color:#dc2626;">{round(n_max['max'], 1)} °C</div>
-            <div class="city">📍 {n_max['name']}</div>
+            <div class="loc-text">Országos Maximum (Abszolút Fáklya-tető)</div>
+            <div class="temp-val" style="color:#dc2626;">{round(n_max['val'], 1)} °C</div>
+            <div style="color:#64748b;">📍 {n_max['name']}</div>
         </div>
     """, unsafe_allow_html=True)
 
-st.info(f"Módszertan: A program 3155 magyarországi ponton végzi el az ECMWF 51 tagú valószínűségi előrejelzésének (ENS) elemzését. Eredményként a teljes adathalmaz abszolút minimumát és maximumát jelenítjük meg.")
+st.warning("Módszertan: A program nem átlagol. A 3155 település összes ECMWF ensemble tagját (51 tag) átvizsgálja, és a létező legalacsonyabb/legmagasabb értéket mutatja meg.")
