@@ -109,7 +109,7 @@ for key in [
 st.set_page_config(page_title="Napi hőmérsékleti szélsők", layout="wide")
 
 st.title("🌡️ Napi hőmérsékleti szélsőértékek")
-st.caption("Forrás: HungaroMet – napi szinoptikus jelentések")
+st.caption("Forrás: HungaroMet – Meteorológiai Adattár - Automata állomások napi adatai")
 
 date_selected = st.date_input(
     "📅 Dátum",
@@ -199,7 +199,7 @@ if st.session_state.loaded:
     # 🏙️ BUDAPEST
     # =========================
     with col_bp:
-        st.subheader("🏙️ Budapest adatok")
+        st.subheader("🏙️ Budapesti adatok")
 
         c1, c2 = st.columns(2)
         if st.session_state.bp_max:
