@@ -1,94 +1,193 @@
-import streamlit as st
-import requests
-import pandas as pd
+
+Gárdonyi András <andras.gardonyi@gmail.com>
+10:10 (1 perccel ezelőtt)
+címzett: én
+
+import io
+import zipfile
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
-# --- 1. PROFI UI ---
-st.set_page_config(page_title="Met-National Ultra v44.0", layout="wide")
-st.markdown("""
-    <style>
-    .stApp { background-color: #010409; color: #e6edf3; }
-    .card {
-        background: #0d1117; padding: 30px; border-radius: 15px;
-        border: 1px solid #30363d; text-align: center;
-    }
-    .min-temp { font-size: 5rem; font-weight: 900; color: #58a6ff; }
-    .max-temp { font-size: 5rem; font-weight: 900; color: #f85149; }
-    .location { font-size: 1.5rem; color: #8b949e; }
-    </style>
-    """, unsafe_allow_html=True)
+import pandas as pd
+import requests
+import streamlit as st
 
-# --- 2. DWD / BRIGHTSKY ENGINE ---
-def run_ultra_scan(target_date):
-    # OKOS SZEZON-KAPCSOLÓ: Ellenőrizzük a hónapot a szezonális logika aktiválásához
-    is_winter = target_date.month in [12, 1, 2]
-    
-    try:
-        towns = requests.get("https://raw.githubusercontent.com/pentasid/hungary-cities-json/master/cities.json", timeout=10).json()
-    except:
-        towns = [{"name": "Budapest", "lat": 47.49, "lng": 19.04}]
+import folium
+from streamlit_folium import st_folium
 
-    g_min = {"val": 100.0, "city": "N/A", "time": "N/A"}
-    g_max = {"val": -100.0, "city": "N/A", "time": "N/A"}
-    processed_count = 0
+# ---------------------------------------------------------
+# KONFIGURÁCIÓ
+# ---------------------------------------------------------
+BASE_INDEX_URL = "https://odp.met.hu/weather/weather_reports/synoptic/hungary/daily/csv/"
 
-    # A BrightSky API-val közvetlenül a DWD ICON-EU adatait kérjük le
-    # Ez a forrás nem korlátozza a magyarországi rácspontokat 1-re!
-    for t in towns[::10]: # Mintavételezés a sebesség miatt, de országos lefedettséggel
-        url = f"https://api.brightsky.dev/weather?lat={t['lat']}&lon={t['lng']}&date={target_date.isoformat()}"
-        
-        try:
-            res = requests.get(url).json()
-            weather_data = res.get('weather', [])
-            
-            if weather_data:
-                processed_count += 1
-                for hour in weather_data:
-                    temp = hour['temperature']
-                    time = hour['timestamp']
-                    
-                    # Globális szélsőértékek keresése
-                    if temp < g_min["val"]:
-                        g_min = {"val": temp, "city": t['name'], "time": time}
-                    if temp > g_max["val"]:
-                        g_max = {"val": temp, "city": t['name'], "time": time}
-        except: continue
+# ---------------------------------------------------------
+# SEGÉDFÜGGVÉNYEK
+# ---------------------------------------------------------
+def build_filename_for_date(date_obj):
+    return f"HABP_1D_{date_obj.strftime('%Y%m%d')}.csv.zip"
 
-    return g_min, g_max, processed_count, is_winter
+def download_zip_bytes(url):
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    return r.content
 
-# --- 3. DASHBOARD ---
-st.title("Met-National Ultra v44.0 (Non-OpenMeteo)")
-target_day = st.date_input("Előrejelzés napja:", value=datetime(2026, 1, 9))
+def extract_csv_from_zipbytes(zip_bytes, expected_csv_name=None):
+    z = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    if expected_csv_name and expected_csv_name in z.namelist():
+        with z.open(expected_csv_name) as f:
+            return f.read().decode("utf-8", errors="replace")
+    for name in z.namelist():
+        if name.lower().endswith(".csv"):
+            with z.open(name) as f:
+                return f.read().decode("utf-8", errors="replace")
+    raise FileNotFoundError("CSV fájl nem található a ZIP-ben")
 
-if st.button("TELJES ORSZÁGOS SZKENNELÉS INDÍTÁSA"):
-    with st.spinner("Közvetlen DWD adatfolyam elemzése 3155 ponton..."):
-        n_min, n_max, count, winter_mode = run_ultra_scan(target_day)
+def parse_and_find_extremes(csv_text):
+    df = pd.read_csv(io.StringIO(csv_text), sep=";", dtype=str)
+    df.columns = [c.strip() for c in df.columns]
 
-    if winter_mode:
-        st.sidebar.info("❄️ Okos szezon-kapcsoló: AKTÍV")
+    df["station_number"] = df.iloc[:, 1].str.strip()
+    df["station_name"] = df.iloc[:, 2].str.strip()
+    df["station_full"] = df["station_name"] + " (" + df["station_number"] + ")"
 
-    if count > 0:
-        st.success(f"Sikeres országos elemzés! Feldolgozott régiók: {count}")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown(f"""
-                <div class="card">
-                    <div style="font-weight:bold; color:#8b949e;">ORSZÁGOS MINIMUM (DWD)</div>
-                    <div class="min-temp">{n_min['val']} °C</div>
-                    <div class="location">📍 {n_min['city']}</div>
-                    <div style="font-family:monospace; margin-top:10px;">{n_min['time']}</div>
-                </div>
-            """, unsafe_allow_html=True)
-            
-        with col2:
-            st.markdown(f"""
-                <div class="card">
-                    <div style="font-weight:bold; color:#8b949e;">ORSZÁGOS MAXIMUM (DWD)</div>
-                    <div class="max-temp">{n_max['val']} °C</div>
-                    <div class="location">📍 {n_max['city']}</div>
-                    <div style="font-family:monospace; margin-top:10px;">{n_max['time']}</div>
-                </div>
-            """, unsafe_allow_html=True)
+    min_col = df.columns[10]
+    max_col = df.columns[12]
+
+    def to_float(col):
+        return (
+            col.str.replace(",", ".", regex=False)
+               .replace({"-999": None, "": None})
+               .astype(float)
+        )
+
+    df["min_val"] = to_float(df[min_col])
+    df["max_val"] = to_float(df[max_col])
+
+    lat_col = next((c for c in df.columns if c.lower() in ["lat", "latitude"]), None)
+    lon_col = next((c for c in df.columns if c.lower() in ["lon", "longitude"]), None)
+
+    if lat_col and lon_col:
+        df["lat"] = pd.to_numeric(df[lat_col].str.replace(",", "."), errors="coerce")
+        df["lon"] = pd.to_numeric(df[lon_col].str.replace(",", "."), errors="coerce")
     else:
-        st.error("Az új forrás nem válaszolt. Ellenőrizze a hálózati kapcsolatot!")
+        df["lat"] = None
+        df["lon"] = None
+
+    def extreme(df_, col, func):
+        if df_[col].dropna().empty:
+            return None
+        idx = getattr(df_[col], func)()
+        return {
+            "value": float(df_.loc[idx, col]),
+            "station": df_.loc[idx, "station_full"],
+            "lat": df_.loc[idx, "lat"],
+            "lon": df_.loc[idx, "lon"],
+        }
+
+    min_res = extreme(df, "min_val", "idxmin")
+    max_res = extreme(df, "max_val", "idxmax")
+
+    # Budapest szűrés
+    df_bp = df[df["station_name"].str.contains("Budapest", case=False, na=False)].copy()
+    bp_min_res = extreme(df_bp, "min_val", "idxmin")
+    bp_max_res = extreme(df_bp, "max_val", "idxmax")
+
+    return min_res, max_res, df, bp_min_res, bp_max_res, df_bp
+
+# ---------------------------------------------------------
+# STREAMLIT UI
+# ---------------------------------------------------------
+st.set_page_config(page_title="Napi hőmérsékleti szélsők", layout="centered")
+
+st.title("🌡️ Napi hőmérsékleti szélsőértékek – Magyarország")
+st.caption("Forrás: HungaroMet – szinoptikus napi jelentések")
+
+date_selected = st.date_input(
+    "📅 Dátum kiválasztása",
+    value=datetime.now(ZoneInfo("Europe/Budapest")).date() - timedelta(days=1),
+)
+
+if st.button("📥 Adatok betöltése"):
+    try:
+        fname = build_filename_for_date(date_selected)
+        zip_bytes = download_zip_bytes(BASE_INDEX_URL + fname)
+        csv_text = extract_csv_from_zipbytes(zip_bytes, fname.replace(".zip", ""))
+
+        (
+            min_res,
+            max_res,
+            df_all,
+            bp_min_res,
+            bp_max_res,
+            df_bp,
+        ) = parse_and_find_extremes(csv_text)
+
+        st.success("✔ Adatok sikeresen betöltve")
+
+        # ---------------------------------
+        # Országos szélsők
+        # ---------------------------------
+        st.subheader("🇭🇺 Országos szélsőértékek")
+        c1, c2 = st.columns(2)
+        c1.metric("🔥 Maximum", f"{max_res['value']} °C", max_res["station"])
+        c2.metric("❄️ Minimum", f"{min_res['value']} °C", min_res["station"])
+
+        # ---------------------------------
+        # Budapest szélsők
+        # ---------------------------------
+        st.subheader("🏙️ Budapest szélsőértékek")
+        c1, c2 = st.columns(2)
+        if bp_max_res:
+            c1.metric("🔥 BP max", f"{bp_max_res['value']} °C", bp_max_res["station"])
+        if bp_min_res:
+            c2.metric("❄️ BP min", f"{bp_min_res['value']} °C", bp_min_res["station"])
+
+        # ---------------------------------
+        # Budapest állomások táblázat
+        # ---------------------------------
+        st.subheader("📋 Budapesti mérőállomások")
+        st.dataframe(
+            df_bp[
+                ["station_name", "station_number", "min_val", "max_val"]
+            ]
+            .rename(
+                columns={
+                    "station_name": "Állomás",
+                    "station_number": "Kód",
+                    "min_val": "Minimum (°C)",
+                    "max_val": "Maximum (°C)",
+                }
+            )
+            .sort_values("Állomás"),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        # ---------------------------------
+        # Országos térkép
+        # ---------------------------------
+        st.subheader("🗺️ Országos térkép")
+        m = folium.Map(location=[47.1, 19.5], zoom_start=7)
+        for _, r in df_all.dropna(subset=["lat", "lon"]).iterrows():
+            folium.CircleMarker(
+                [r.lat, r.lon], radius=4, color="black", fill=True
+            ).add_to(m)
+        st_folium(m, width=750, height=500)
+
+        # ---------------------------------
+        # Budapest térkép
+        # ---------------------------------
+        st.subheader("🗺️ Budapest térkép")
+        m_bp = folium.Map(location=[47.4979, 19.0402], zoom_start=11)
+        for _, r in df_bp.dropna(subset=["lat", "lon"]).iterrows():
+            folium.CircleMarker(
+                [r.lat, r.lon],
+                radius=7,
+                color="black",
+                fill=True,
+                tooltip=r.station_full,
+            ).add_to(m_bp)
+        st_folium(m_bp, width=750, height=500)
+
+    except Exception as e:
+        st.error(f"Hiba történt: {e}")
