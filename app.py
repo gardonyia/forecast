@@ -35,12 +35,12 @@ def extract_csv_from_zipbytes(zip_bytes, expected_csv_name):
 
 
 def to_float_clean(series):
-    return (
+    return pd.to_numeric(
         series.astype(str)
         .str.strip()
-        .replace({"-999": pd.NA, "": pd.NA})
-        .str.replace(",", ".", regex=False)
-        .astype(float)
+        .replace({"-999": None, "": None})
+        .str.replace(",", ".", regex=False),
+        errors="coerce",
     )
 
 
@@ -53,20 +53,24 @@ def parse_data(csv_text):
     df["station_name"] = df.iloc[:, 2]
     df["station_full"] = df["station_name"] + " (" + df["station_number"] + ")"
 
-    # Hőmérsékletek (K és M oszlop)
+    # Hőmérséklet adatok
     df["min_val"] = to_float_clean(df.iloc[:, 10])
     df["max_val"] = to_float_clean(df.iloc[:, 12])
 
-    # Koordináták (ha vannak)
+    # Koordináták
     lat_col = next((c for c in df.columns if c.lower() in ["lat", "latitude"]), None)
     lon_col = next((c for c in df.columns if c.lower() in ["lon", "longitude"]), None)
 
     if lat_col and lon_col:
-        df["lat"] = pd.to_numeric(df[lat_col].str.replace(",", "."), errors="coerce")
-        df["lon"] = pd.to_numeric(df[lon_col].str.replace(",", "."), errors="coerce")
+        df["lat"] = pd.to_numeric(
+            df[lat_col].str.replace(",", ".", regex=False), errors="coerce"
+        )
+        df["lon"] = pd.to_numeric(
+            df[lon_col].str.replace(",", ".", regex=False), errors="coerce"
+        )
     else:
-        df["lat"] = pd.NA
-        df["lon"] = pd.NA
+        df["lat"] = None
+        df["lon"] = None
 
     def extreme(df_, col, fn):
         s = df_[col].dropna()
@@ -104,14 +108,14 @@ for key in ["loaded", "df", "df_bp", "min_res", "max_res", "bp_min", "bp_max"]:
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="Napi hőmérsékleti szélsőértékek",
-    layout="centered"
+    layout="centered",
 )
 
 st.title("🌡️ Napi hőmérsékleti szélsőértékek")
 st.caption("Forrás: HungaroMet – napi szinoptikus jelentések")
 
 date_selected = st.date_input(
-    "📅 Dátum kiválasztása",
+    "📅 Dátum",
     value=datetime.now(ZoneInfo("Europe/Budapest")).date() - timedelta(days=1),
 )
 
@@ -140,11 +144,7 @@ if st.button("📥 Adatok betöltése"):
 # ---------------------------------------------------------
 if st.session_state.loaded:
 
-    # -------------------------------
-    # Országos szélsők
-    # -------------------------------
-    st.subheader("🇭🇺 Országos hőmérsékleti szélsők")
-
+    st.subheader("🇭🇺 Országos szélsők")
     c1, c2 = st.columns(2)
 
     c1.metric(
@@ -159,11 +159,7 @@ if st.session_state.loaded:
         st.session_state.min_res["station"],
     )
 
-    # -------------------------------
-    # Budapest szélsők
-    # -------------------------------
-    st.subheader("🏙️ Budapest hőmérsékleti szélsők")
-
+    st.subheader("🏙️ Budapest szélsők")
     c1, c2 = st.columns(2)
 
     if st.session_state.bp_max:
@@ -180,11 +176,7 @@ if st.session_state.loaded:
             st.session_state.bp_min["station"],
         )
 
-    # -------------------------------
-    # Budapesti állomások táblázat
-    # -------------------------------
     st.subheader("📋 Budapesti mérőállomások")
-
     st.dataframe(
         st.session_state.df_bp[
             ["station_name", "station_number", "min_val", "max_val"]
@@ -202,40 +194,28 @@ if st.session_state.loaded:
         hide_index=True,
     )
 
-    # -------------------------------
-    # Országos térkép
-    # -------------------------------
     st.subheader("🗺️ Országos térkép")
-
     m = folium.Map(location=[47.1, 19.5], zoom_start=7)
-
     for _, r in st.session_state.df.dropna(subset=["lat", "lon"]).iterrows():
         folium.CircleMarker(
-            location=[r.lat, r.lon],
+            [r.lat, r.lon],
             radius=4,
             color="black",
             fill=True,
             fill_opacity=0.9,
             tooltip=r.station_full,
         ).add_to(m)
-
     st_folium(m, width=750, height=500)
 
-    # -------------------------------
-    # Budapest térkép
-    # -------------------------------
     st.subheader("🗺️ Budapest térkép")
-
     m_bp = folium.Map(location=[47.4979, 19.0402], zoom_start=11)
-
     for _, r in st.session_state.df_bp.dropna(subset=["lat", "lon"]).iterrows():
         folium.CircleMarker(
-            location=[r.lat, r.lon],
+            [r.lat, r.lon],
             radius=7,
             color="black",
             fill=True,
             fill_opacity=0.9,
             tooltip=r.station_full,
         ).add_to(m_bp)
-
     st_folium(m_bp, width=750, height=500)
