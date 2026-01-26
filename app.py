@@ -1,8 +1,3 @@
-
-Gárdonyi András <andras.gardonyi@gmail.com>
-10:10 (1 perccel ezelőtt)
-címzett: én
-
 import io
 import zipfile
 from datetime import datetime, timedelta
