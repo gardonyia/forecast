@@ -53,7 +53,7 @@ def parse_data(csv_text):
     df["station_name"] = df.iloc[:, 2]
     df["station_full"] = df["station_name"] + " (" + df["station_number"] + ")"
 
-    # Hőmérséklet adatok
+    # Hőmérsékletek
     df["min_val"] = to_float_clean(df.iloc[:, 10])
     df["max_val"] = to_float_clean(df.iloc[:, 12])
 
@@ -62,15 +62,11 @@ def parse_data(csv_text):
     lon_col = next((c for c in df.columns if c.lower() in ["lon", "longitude"]), None)
 
     if lat_col and lon_col:
-        df["lat"] = pd.to_numeric(
-            df[lat_col].str.replace(",", ".", regex=False), errors="coerce"
-        )
-        df["lon"] = pd.to_numeric(
-            df[lon_col].str.replace(",", ".", regex=False), errors="coerce"
-        )
+        df["lat"] = pd.to_numeric(df[lat_col].str.replace(",", ".", regex=False), errors="coerce")
+        df["lon"] = pd.to_numeric(df[lon_col].str.replace(",", ".", regex=False), errors="coerce")
     else:
-        df["lat"] = None
-        df["lon"] = None
+        df["lat"] = pd.NA
+        df["lon"] = pd.NA
 
     def extreme(df_, col, fn):
         s = df_[col].dropna()
@@ -99,17 +95,18 @@ def parse_data(csv_text):
 # ---------------------------------------------------------
 # SESSION STATE
 # ---------------------------------------------------------
-for key in ["loaded", "df", "df_bp", "min_res", "max_res", "bp_min", "bp_max"]:
+for key in [
+    "loaded", "df", "df_bp",
+    "min_res", "max_res", "bp_min", "bp_max",
+    "zip_bytes", "zip_filename"
+]:
     if key not in st.session_state:
         st.session_state[key] = None
 
 # ---------------------------------------------------------
 # UI
 # ---------------------------------------------------------
-st.set_page_config(
-    page_title="Napi hőmérsékleti szélsőértékek",
-    layout="centered",
-)
+st.set_page_config(page_title="Napi hőmérsékleti szélsők", layout="wide")
 
 st.title("🌡️ Napi hőmérsékleti szélsőértékek")
 st.caption("Forrás: HungaroMet – napi szinoptikus jelentések")
@@ -134,88 +131,125 @@ if st.button("📥 Adatok betöltése"):
             st.session_state.bp_max,
         ) = parse_data(csv_text)
 
+        st.session_state.zip_bytes = zip_bytes
+        st.session_state.zip_filename = fname
         st.session_state.loaded = True
 
     except Exception as e:
         st.error(f"Hiba történt: {e}")
 
 # ---------------------------------------------------------
-# MEGJELENÍTÉS
+# ZIP LETÖLTÉS
+# ---------------------------------------------------------
+if st.session_state.loaded and st.session_state.zip_bytes:
+    st.download_button(
+        "⬇️ Eredeti ZIP fájl letöltése",
+        data=st.session_state.zip_bytes,
+        file_name=st.session_state.zip_filename,
+        mime="application/zip",
+    )
+
+# ---------------------------------------------------------
+# MEGJELENÍTÉS – KÉT HASÁB
 # ---------------------------------------------------------
 if st.session_state.loaded:
 
-    st.subheader("🇭🇺 Országos szélsők")
-    c1, c2 = st.columns(2)
+    col_hu, col_bp = st.columns(2)
 
-    c1.metric(
-        "🔥 Maximum",
-        f"{st.session_state.max_res['value']} °C",
-        st.session_state.max_res["station"],
-    )
+    # =========================
+    # 🇭🇺 ORSZÁGOS
+    # =========================
+    with col_hu:
+        st.subheader("🇭🇺 Országos adatok")
 
-    c2.metric(
-        "❄️ Minimum",
-        f"{st.session_state.min_res['value']} °C",
-        st.session_state.min_res["station"],
-    )
-
-    st.subheader("🏙️ Budapest szélsők")
-    c1, c2 = st.columns(2)
-
-    if st.session_state.bp_max:
+        c1, c2 = st.columns(2)
         c1.metric(
-            "🔥 BP maximum",
-            f"{st.session_state.bp_max['value']} °C",
-            st.session_state.bp_max["station"],
+            "🔥 Maximum",
+            f"{st.session_state.max_res['value']} °C",
+            st.session_state.max_res["station"],
         )
-
-    if st.session_state.bp_min:
         c2.metric(
-            "❄️ BP minimum",
-            f"{st.session_state.bp_min['value']} °C",
-            st.session_state.bp_min["station"],
+            "❄️ Minimum",
+            f"{st.session_state.min_res['value']} °C",
+            st.session_state.min_res["station"],
         )
 
-    st.subheader("📋 Budapesti mérőállomások")
-    st.dataframe(
-        st.session_state.df_bp[
-            ["station_name", "station_number", "min_val", "max_val"]
-        ]
-        .rename(
-            columns={
-                "station_name": "Állomás",
-                "station_number": "Kód",
-                "min_val": "Minimum (°C)",
-                "max_val": "Maximum (°C)",
-            }
+        st.markdown("### 🗺️ Országos térkép")
+        m = folium.Map(location=[47.1, 19.5], zoom_start=7)
+
+        for _, r in st.session_state.df.dropna(subset=["lat", "lon"]).iterrows():
+            color = "black"
+            if r.station_full == st.session_state.max_res["station"]:
+                color = "red"
+            if r.station_full == st.session_state.min_res["station"]:
+                color = "blue"
+
+            folium.CircleMarker(
+                [r.lat, r.lon],
+                radius=6,
+                color=color,
+                fill=True,
+                fill_opacity=0.9,
+                tooltip=r.station_full,
+            ).add_to(m)
+
+        st_folium(m, height=500, use_container_width=True)
+
+    # =========================
+    # 🏙️ BUDAPEST
+    # =========================
+    with col_bp:
+        st.subheader("🏙️ Budapest adatok")
+
+        c1, c2 = st.columns(2)
+        if st.session_state.bp_max:
+            c1.metric(
+                "🔥 BP maximum",
+                f"{st.session_state.bp_max['value']} °C",
+                st.session_state.bp_max["station"],
+            )
+        if st.session_state.bp_min:
+            c2.metric(
+                "❄️ BP minimum",
+                f"{st.session_state.bp_min['value']} °C",
+                st.session_state.bp_min["station"],
+            )
+
+        st.markdown("### 🗺️ Budapest térkép")
+        m_bp = folium.Map(location=[47.4979, 19.0402], zoom_start=11)
+
+        for _, r in st.session_state.df_bp.dropna(subset=["lat", "lon"]).iterrows():
+            color = "black"
+            if st.session_state.bp_max and r.station_full == st.session_state.bp_max["station"]:
+                color = "red"
+            if st.session_state.bp_min and r.station_full == st.session_state.bp_min["station"]:
+                color = "blue"
+
+            folium.CircleMarker(
+                [r.lat, r.lon],
+                radius=8,
+                color=color,
+                fill=True,
+                fill_opacity=0.9,
+                tooltip=r.station_full,
+            ).add_to(m_bp)
+
+        st_folium(m_bp, height=500, use_container_width=True)
+
+        st.markdown("### 📋 Budapesti mérőállomások")
+        st.dataframe(
+            st.session_state.df_bp[
+                ["station_name", "station_number", "min_val", "max_val"]
+            ]
+            .rename(
+                columns={
+                    "station_name": "Állomás",
+                    "station_number": "Kód",
+                    "min_val": "Minimum (°C)",
+                    "max_val": "Maximum (°C)",
+                }
+            )
+            .sort_values("Állomás"),
+            use_container_width=True,
+            hide_index=True,
         )
-        .sort_values("Állomás"),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    st.subheader("🗺️ Országos térkép")
-    m = folium.Map(location=[47.1, 19.5], zoom_start=7)
-    for _, r in st.session_state.df.dropna(subset=["lat", "lon"]).iterrows():
-        folium.CircleMarker(
-            [r.lat, r.lon],
-            radius=4,
-            color="black",
-            fill=True,
-            fill_opacity=0.9,
-            tooltip=r.station_full,
-        ).add_to(m)
-    st_folium(m, width=750, height=500)
-
-    st.subheader("🗺️ Budapest térkép")
-    m_bp = folium.Map(location=[47.4979, 19.0402], zoom_start=11)
-    for _, r in st.session_state.df_bp.dropna(subset=["lat", "lon"]).iterrows():
-        folium.CircleMarker(
-            [r.lat, r.lon],
-            radius=7,
-            color="black",
-            fill=True,
-            fill_opacity=0.9,
-            tooltip=r.station_full,
-        ).add_to(m_bp)
-    st_folium(m_bp, width=750, height=500)
