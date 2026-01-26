@@ -11,7 +11,7 @@ import folium
 from streamlit_folium import st_folium
 
 # ---------------------------------------------------------
-# KONFIGURÁCIÓ
+# KONFIG
 # ---------------------------------------------------------
 BASE_INDEX_URL = "https://odp.met.hu/weather/weather_reports/synoptic/hungary/daily/csv/"
 
@@ -26,37 +26,30 @@ def download_zip_bytes(url):
     r.raise_for_status()
     return r.content
 
-def extract_csv_from_zipbytes(zip_bytes, expected_csv_name=None):
+def extract_csv_from_zipbytes(zip_bytes, expected_csv_name):
     z = zipfile.ZipFile(io.BytesIO(zip_bytes))
-    if expected_csv_name and expected_csv_name in z.namelist():
-        with z.open(expected_csv_name) as f:
-            return f.read().decode("utf-8", errors="replace")
-    for name in z.namelist():
-        if name.lower().endswith(".csv"):
-            with z.open(name) as f:
-                return f.read().decode("utf-8", errors="replace")
-    raise FileNotFoundError("CSV fájl nem található a ZIP-ben")
+    with z.open(expected_csv_name) as f:
+        return f.read().decode("utf-8", errors="replace")
 
-def parse_and_find_extremes(csv_text):
+def to_float_clean(col):
+    return (
+        col.astype(str)
+        .str.strip()
+        .replace({"-999": pd.NA, "": pd.NA})
+        .str.replace(",", ".", regex=False)
+        .astype(float)
+    )
+
+def parse_data(csv_text):
     df = pd.read_csv(io.StringIO(csv_text), sep=";", dtype=str)
     df.columns = [c.strip() for c in df.columns]
 
-    df["station_number"] = df.iloc[:, 1].str.strip()
-    df["station_name"] = df.iloc[:, 2].str.strip()
+    df["station_number"] = df.iloc[:, 1]
+    df["station_name"] = df.iloc[:, 2]
     df["station_full"] = df["station_name"] + " (" + df["station_number"] + ")"
 
-    min_col = df.columns[10]
-    max_col = df.columns[12]
-
-    def to_float(col):
-        return (
-            col.str.replace(",", ".", regex=False)
-               .replace({"-999": None, "": None})
-               .astype(float)
-        )
-
-    df["min_val"] = to_float(df[min_col])
-    df["max_val"] = to_float(df[max_col])
+    df["min_val"] = to_float_clean(df.iloc[:, 10])
+    df["max_val"] = to_float_clean(df.iloc[:, 12])
 
     lat_col = next((c for c in df.columns if c.lower() in ["lat", "latitude"]), None)
     lon_col = next((c for c in df.columns if c.lower() in ["lon", "longitude"]), None)
@@ -65,13 +58,14 @@ def parse_and_find_extremes(csv_text):
         df["lat"] = pd.to_numeric(df[lat_col].str.replace(",", "."), errors="coerce")
         df["lon"] = pd.to_numeric(df[lon_col].str.replace(",", "."), errors="coerce")
     else:
-        df["lat"] = None
-        df["lon"] = None
+        df["lat"] = pd.NA
+        df["lon"] = pd.NA
 
-    def extreme(df_, col, func):
-        if df_[col].dropna().empty:
+    def extreme(df_, col, fn):
+        s = df_[col].dropna()
+        if s.empty:
             return None
-        idx = getattr(df_[col], func)()
+        idx = getattr(s, fn)()
         return {
             "value": float(df_.loc[idx, col]),
             "station": df_.loc[idx, "station_full"],
@@ -82,23 +76,29 @@ def parse_and_find_extremes(csv_text):
     min_res = extreme(df, "min_val", "idxmin")
     max_res = extreme(df, "max_val", "idxmax")
 
-    # Budapest szűrés
     df_bp = df[df["station_name"].str.contains("Budapest", case=False, na=False)].copy()
-    bp_min_res = extreme(df_bp, "min_val", "idxmin")
-    bp_max_res = extreme(df_bp, "max_val", "idxmax")
+    bp_min = extreme(df_bp, "min_val", "idxmin")
+    bp_max = extreme(df_bp, "max_val", "idxmax")
 
-    return min_res, max_res, df, bp_min_res, bp_max_res, df_bp
+    return df, df_bp, min_res, max_res, bp_min, bp_max
 
 # ---------------------------------------------------------
-# STREAMLIT UI
+# SESSION STATE
+# ---------------------------------------------------------
+for k in ["loaded", "df", "df_bp", "min_res", "max_res", "bp_min", "bp_max"]:
+    if k not in st.session_state:
+        st.session_state[k] = None
+
+# ---------------------------------------------------------
+# UI
 # ---------------------------------------------------------
 st.set_page_config(page_title="Napi hőmérsékleti szélsők", layout="centered")
 
-st.title("🌡️ Napi hőmérsékleti szélsőértékek – Magyarország")
-st.caption("Forrás: HungaroMet – szinoptikus napi jelentések")
+st.title("🌡️ Napi hőmérsékleti szélsőértékek")
+st.caption("Forrás: HungaroMet – szinoptikus jelentések")
 
 date_selected = st.date_input(
-    "📅 Dátum kiválasztása",
+    "📅 Dátum",
     value=datetime.now(ZoneInfo("Europe/Budapest")).date() - timedelta(days=1),
 )
 
@@ -109,80 +109,24 @@ if st.button("📥 Adatok betöltése"):
         csv_text = extract_csv_from_zipbytes(zip_bytes, fname.replace(".zip", ""))
 
         (
-            min_res,
-            max_res,
-            df_all,
-            bp_min_res,
-            bp_max_res,
-            df_bp,
-        ) = parse_and_find_extremes(csv_text)
+            st.session_state.df,
+            st.session_state.df_bp,
+            st.session_state.min_res,
+            st.session_state.max_res,
+            st.session_state.bp_min,
+            st.session_state.bp_max,
+        ) = parse_data(csv_text)
 
-        st.success("✔ Adatok sikeresen betöltve")
-
-        # ---------------------------------
-        # Országos szélsők
-        # ---------------------------------
-        st.subheader("🇭🇺 Országos szélsőértékek")
-        c1, c2 = st.columns(2)
-        c1.metric("🔥 Maximum", f"{max_res['value']} °C", max_res["station"])
-        c2.metric("❄️ Minimum", f"{min_res['value']} °C", min_res["station"])
-
-        # ---------------------------------
-        # Budapest szélsők
-        # ---------------------------------
-        st.subheader("🏙️ Budapest szélsőértékek")
-        c1, c2 = st.columns(2)
-        if bp_max_res:
-            c1.metric("🔥 BP max", f"{bp_max_res['value']} °C", bp_max_res["station"])
-        if bp_min_res:
-            c2.metric("❄️ BP min", f"{bp_min_res['value']} °C", bp_min_res["station"])
-
-        # ---------------------------------
-        # Budapest állomások táblázat
-        # ---------------------------------
-        st.subheader("📋 Budapesti mérőállomások")
-        st.dataframe(
-            df_bp[
-                ["station_name", "station_number", "min_val", "max_val"]
-            ]
-            .rename(
-                columns={
-                    "station_name": "Állomás",
-                    "station_number": "Kód",
-                    "min_val": "Minimum (°C)",
-                    "max_val": "Maximum (°C)",
-                }
-            )
-            .sort_values("Állomás"),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        # ---------------------------------
-        # Országos térkép
-        # ---------------------------------
-        st.subheader("🗺️ Országos térkép")
-        m = folium.Map(location=[47.1, 19.5], zoom_start=7)
-        for _, r in df_all.dropna(subset=["lat", "lon"]).iterrows():
-            folium.CircleMarker(
-                [r.lat, r.lon], radius=4, color="black", fill=True
-            ).add_to(m)
-        st_folium(m, width=750, height=500)
-
-        # ---------------------------------
-        # Budapest térkép
-        # ---------------------------------
-        st.subheader("🗺️ Budapest térkép")
-        m_bp = folium.Map(location=[47.4979, 19.0402], zoom_start=11)
-        for _, r in df_bp.dropna(subset=["lat", "lon"]).iterrows():
-            folium.CircleMarker(
-                [r.lat, r.lon],
-                radius=7,
-                color="black",
-                fill=True,
-                tooltip=r.station_full,
-            ).add_to(m_bp)
-        st_folium(m_bp, width=750, height=500)
-
+        st.session_state.loaded = True
     except Exception as e:
-        st.error(f"Hiba történt: {e}")
+        st.error(e)
+
+# ---------------------------------------------------------
+# MEGJELENÍTÉS
+# ---------------------------------------------------------
+if st.session_state.loaded:
+
+    st.subheader("🇭🇺 Országos szélsők")
+    c1, c2 = st.columns(2)
+    c1.metric("🔥 Maximum", f"{st.session_state.max_res['value']} °C", st.session_state.max_res["station"])
+    c2.metric("❄️ Minimum", f"{st.session_state.min_res['value']} °C", st.session_state
