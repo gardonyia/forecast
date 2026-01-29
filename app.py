@@ -220,8 +220,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("🌡️ Napi hőmérsékleti riport")
-st.caption("Forrás: HungaroMet – napi szinoptikus jelentések")
+st.title("🌡️ Napi hőmérsékleti szélsőértékek")
+st.caption("Forrás: HungaroMet – Meteorológiai Adattár - Automata állomások napi adatai")
 
 date_selected = st.date_input(
     "📅 Dátum",
