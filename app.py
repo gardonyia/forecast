@@ -15,15 +15,15 @@ BASE_INDEX_URL = "https://odp.met.hu/weather/weather_reports/synoptic/hungary/da
 
 CITIES = ["Budapest", "Debrecen", "Győr", "Miskolc", "Pécs", "Szeged"]
 
-# Halvány háttérképek (public URL). Ha a környezet blokkolja, simán csak nem látszik.
+# Városképek + zászló (Wikimedia direct file path)
 CITY_BACKGROUNDS = {
-    "Országos": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Flag_of_Hungary.svg/1280px-Flag_of_Hungary.svg.png",
-    "Budapest": "https://images.unsplash.com/photo-1549640376-8cc6b7c2f42f?auto=format&fit=crop&w=1200&q=60",
-    "Debrecen": "https://images.unsplash.com/photo-1526481280695-3c687fd5432c?auto=format&fit=crop&w=1200&q=60",
-    "Győr": "https://images.unsplash.com/photo-1520962922320-2038eebab146?auto=format&fit=crop&w=1200&q=60",
-    "Miskolc": "https://images.unsplash.com/photo-1523731407965-2430cd12f5e4?auto=format&fit=crop&w=1200&q=60",
-    "Pécs": "https://images.unsplash.com/photo-1523419409543-a5e549c1faa3?auto=format&fit=crop&w=1200&q=60",
-    "Szeged": "https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?auto=format&fit=crop&w=1200&q=60",
+    "Országos": "https://commons.wikimedia.org/wiki/Special:FilePath/Flag_of_Hungary.svg",
+    "Budapest": "https://commons.wikimedia.org/wiki/Special:FilePath/Budapest_02.jpg",
+    "Debrecen": "https://commons.wikimedia.org/wiki/Special:FilePath/Debrecen_(2).JPG",
+    "Győr": "https://commons.wikimedia.org/wiki/Special:FilePath/Gy%C5%91r_-_Hungary_(5129270479).jpg",
+    "Miskolc": "https://commons.wikimedia.org/wiki/Special:FilePath/Miskolc20070616_12.jpg",
+    "Pécs": "https://commons.wikimedia.org/wiki/Special:FilePath/P%C3%A9cs_Sz%C3%A9chenyi_Square.JPG",
+    "Szeged": "https://commons.wikimedia.org/wiki/Special:FilePath/Szeged-varoshaza-02.jpg",
 }
 
 # ---------------------------------------------------------
@@ -102,9 +102,9 @@ def style_table(df_numeric):
         styles = []
         for col in row.index:
             if col == "Minimum (°C)" and row[col] == min_v:
-                styles.append("color:#1f77b4;font-weight:700;")
+                styles.append("color:#1f77b4;font-weight:800;")
             elif col == "Maximum (°C)" and row[col] == max_v:
-                styles.append("color:#d62728;font-weight:700;")
+                styles.append("color:#d62728;font-weight:800;")
             else:
                 styles.append("")
         return styles
@@ -116,7 +116,6 @@ def card_html(title, ext, bg_url, opacity=0.10):
     max_txt = f"{ext['max']:.1f} °C" if pd.notna(ext["max"]) else "Nincs adat"
     min_txt = f"{ext['min']:.1f} °C" if pd.notna(ext["min"]) else "Nincs adat"
 
-    # Font-hierarchia: városnév nagyobb, értékek kicsit kisebb, de tiszták.
     return f"""
     <div style="
         position:relative;
@@ -134,44 +133,35 @@ def card_html(title, ext, bg_url, opacity=0.10):
             background-size:cover;
             background-position:center;
             opacity:{opacity};
+            filter:saturate(0.9) contrast(0.95);
         "></div>
 
         <div style="position:relative;">
-            <div style="font-size:18px;font-weight:800; line-height:1.2; margin-bottom:8px;">
+            <div style="font-size:18px;font-weight:900; line-height:1.2; margin-bottom:8px;">
                 {title}
             </div>
 
-            <div style="display:flex; gap:10px; align-items:baseline; justify-content:space-between;">
-                <div style="font-size:14px; font-weight:700; color:#d62728;">
-                    🔥 Max
-                </div>
-                <div style="font-size:20px; font-weight:800; color:#111;">
-                    {max_txt}
-                </div>
+            <div style="display:flex; justify-content:space-between; align-items:baseline;">
+                <div style="font-size:14px; font-weight:800; color:#d62728;">🔥 Max</div>
+                <div style="font-size:20px; font-weight:900; color:#111;">{max_txt}</div>
             </div>
 
-            <div style="display:flex; gap:10px; align-items:baseline; justify-content:space-between; margin-top:6px;">
-                <div style="font-size:14px; font-weight:700; color:#1f77b4;">
-                    ❄️ Min
-                </div>
-                <div style="font-size:20px; font-weight:800; color:#111;">
-                    {min_txt}
-                </div>
+            <div style="display:flex; justify-content:space-between; align-items:baseline; margin-top:6px;">
+                <div style="font-size:14px; font-weight:800; color:#1f77b4;">❄️ Min</div>
+                <div style="font-size:20px; font-weight:900; color:#111;">{min_txt}</div>
             </div>
         </div>
     </div>
     """
 
 
-def render_card(title, ext, kind_key, height=130):
-    bg = CITY_BACKGROUNDS.get(kind_key, "")
+def render_card(title, ext, key_for_bg, height=135):
+    bg = CITY_BACKGROUNDS.get(key_for_bg, "")
     html = card_html(title=title, ext=ext, bg_url=bg, opacity=0.10)
-    # components.html iframe-ben renderel. Ez nem fog tagokat kiírni szövegként.
     components.html(html, height=height)
 
 
 def build_export_dataframe(date_selected, values_by_city):
-    # values_by_city: dict like {"Országos": {"max":..., "min":...}, "Budapest":..., ...}
     row = {
         "Dátum": date_selected.strftime("%Y-%m-%d"),
         "Országos maximum": values_by_city.get("Országos", {}).get("max"),
@@ -206,8 +196,24 @@ if st.session_state["loaded"] is None:
 # UI
 # ---------------------------------------------------------
 st.set_page_config(page_title="Napi hőmérsékleti riport", layout="centered")
+
+# Max szélesség: pont annyi, hogy ne legyen horizontal scroll / csúszka
+st.markdown(
+    """
+    <style>
+        .block-container {
+            max-width: 1200px;
+            padding-left: 1.75rem;
+            padding-right: 1.75rem;
+        }
+        .stDataFrame { overflow-x: hidden; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("🌡️ Napi hőmérsékleti riport")
-st.caption("Forrás: HungaroMet – napi szinoptikus jelentések. A háttérképek halványak, hogy olvasható maradjon minden.")
+st.caption("Forrás: HungaroMet – napi szinoptikus jelentések")
 
 date_selected = st.date_input(
     "📅 Dátum",
@@ -227,7 +233,6 @@ if st.button("📥 Adatok betöltése"):
         st.session_state["zip_name"] = fname
         st.session_state["loaded"] = True
 
-        # előkészítjük az exporthoz is
         values = {"Országos": calc_extremes(df)}
         for city in CITIES:
             df_city = df[df["station_name"].str.contains(city, case=False, na=False)]
@@ -245,11 +250,11 @@ if st.session_state["loaded"] and st.session_state["df"] is not None:
     df = st.session_state["df"]
     values = st.session_state["values_by_city"]
 
-    # 1) Országos szekció
+    # ---- Országos szekció
     st.header("🇭🇺 Országos adatok")
-    render_card("Országos", values["Országos"], kind_key="Országos", height=140)
+    render_card("Országos", values["Országos"], key_for_bg="Országos", height=145)
 
-    # Letöltések (országos alatt, logikus helyen)
+    # Letöltések (egy sorban)
     dl1, dl2 = st.columns(2)
     with dl1:
         st.download_button(
@@ -257,12 +262,11 @@ if st.session_state["loaded"] and st.session_state["df"] is not None:
             data=st.session_state["zip_bytes"],
             file_name=st.session_state["zip_name"],
             mime="application/zip",
+            use_container_width=True,
         )
-
     with dl2:
         export_df = build_export_dataframe(date_selected, values)
         buf = io.BytesIO()
-        # A2-től: header A1-ben, adat A2-ben (alapértelmezett to_excel)
         with pd.ExcelWriter(buf, engine="openpyxl") as w:
             export_df.to_excel(w, index=False, sheet_name="Napi adatok")
         st.download_button(
@@ -270,27 +274,28 @@ if st.session_state["loaded"] and st.session_state["df"] is not None:
             data=buf.getvalue(),
             file_name=f"napi_homerseklet_{date_selected}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
         )
 
     st.divider()
 
-    # 2) Városok szekció
+    # ---- Városok szekció
     st.header("🏙️ Városi adatok")
 
-    # Városi kártyák gridben (kevesebb görgetés)
-    # 3 oszlopos grid általában jól olvasható normál layouton.
+    # 3-as grid: jó arány centered layouton, és nem szokott csúszkát generálni
     cols = st.columns(3)
     for i, city in enumerate(CITIES):
         with cols[i % 3]:
-            render_card(city, values[city], kind_key=city, height=140)
+            render_card(city, values[city], key_for_bg=city, height=145)
 
     st.subheader("📋 Városi állomások (részletek)")
-    # Táblázatok 2 oszlopban, expanderekben
+
+    # Táblázatok két oszlopban, és ALAPBÓL NYITVA
     tcols = st.columns(2)
     for i, city in enumerate(CITIES):
         df_city = df[df["station_name"].str.contains(city, case=False, na=False)].copy()
         with tcols[i % 2]:
-            with st.expander(city, expanded=False):
+            with st.expander(city, expanded=True):
                 numeric = prepare_table(df_city)
                 display = format_for_display(numeric)
 
@@ -298,14 +303,20 @@ if st.session_state["loaded"] and st.session_state["df"] is not None:
                     display.style
                     .apply(style_table(numeric), axis=1)
                     .set_table_styles([
-                        {"selector": "th", "props": [("background-color", "#f3f4f6"),
-                                                     ("border", "1px solid #cbd5e1"),
-                                                     ("padding", "6px"),
-                                                     ("font-weight", "700")]},
-                        {"selector": "td", "props": [("border", "1px solid #e2e8f0"),
-                                                     ("padding", "6px")]},
-                        {"selector": "table", "props": [("border-collapse", "collapse"),
-                                                        ("width", "100%")]},
+                        {"selector": "th", "props": [
+                            ("background-color", "#f3f4f6"),
+                            ("border", "1px solid #cbd5e1"),
+                            ("padding", "6px"),
+                            ("font-weight", "800"),
+                        ]},
+                        {"selector": "td", "props": [
+                            ("border", "1px solid #e2e8f0"),
+                            ("padding", "6px"),
+                        ]},
+                        {"selector": "table", "props": [
+                            ("border-collapse", "collapse"),
+                            ("width", "100%"),
+                        ]},
                     ])
                 )
 
