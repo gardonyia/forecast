@@ -8,7 +8,7 @@ import requests
 import streamlit as st
 
 # ---------------------------------------------------------
-# KONFIGURÁCIÓ
+# KONFIG
 # ---------------------------------------------------------
 BASE_INDEX_URL = "https://odp.met.hu/weather/weather_reports/synoptic/hungary/daily/csv/"
 
@@ -56,7 +56,6 @@ def parse_data(csv_text):
 
     df["station_number"] = df.iloc[:, 1]
     df["station_name"] = df.iloc[:, 2]
-    df["station_full"] = df["station_name"] + " (" + df["station_number"] + ")"
 
     df["min_val"] = to_float_clean(df.iloc[:, 10])
     df["max_val"] = to_float_clean(df.iloc[:, 12])
@@ -65,21 +64,14 @@ def parse_data(csv_text):
 
 
 def calc_extremes(df):
-    result = {"min": None, "max": None}
-
-    if not df["min_val"].dropna().empty:
-        idx = df["min_val"].idxmin()
-        result["min"] = df.loc[idx, "min_val"]
-
-    if not df["max_val"].dropna().empty:
-        idx = df["max_val"].idxmax()
-        result["max"] = df.loc[idx, "max_val"]
-
-    return result
+    return {
+        "min": df["min_val"].min(),
+        "max": df["max_val"].max(),
+    }
 
 
 def prepare_table(df_city):
-    table = (
+    return (
         df_city[
             ["station_name", "station_number", "min_val", "max_val"]
         ]
@@ -93,7 +85,6 @@ def prepare_table(df_city):
         )
         .sort_values("Állomás")
     )
-    return table
 
 
 def format_for_display(df):
@@ -106,19 +97,18 @@ def format_for_display(df):
 
 
 def style_extremes(df_numeric):
-    min_val = df_numeric["Minimum (°C)"].min()
-    max_val = df_numeric["Maximum (°C)"].max()
+    min_v = df_numeric["Minimum (°C)"].min()
+    max_v = df_numeric["Maximum (°C)"].max()
 
     def style(row):
-        styles = []
-        for col in row.index:
-            if col == "Minimum (°C)" and row[col] == min_val:
-                styles.append("color: blue; font-weight: bold;")
-            elif col == "Maximum (°C)" and row[col] == max_val:
-                styles.append("color: red; font-weight: bold;")
-            else:
-                styles.append("")
-        return styles
+        return [
+            "color: blue; font-weight: bold"
+            if col == "Minimum (°C)" and row[col] == min_v
+            else "color: red; font-weight: bold"
+            if col == "Maximum (°C)" and row[col] == max_v
+            else ""
+            for col in row.index
+        ]
 
     return style
 
@@ -126,17 +116,21 @@ def style_extremes(df_numeric):
 # ---------------------------------------------------------
 # UI
 # ---------------------------------------------------------
-st.set_page_config(page_title="Napi hőmérsékleti riport", layout="centered")
+st.set_page_config(page_title="Napi hőmérsékleti riport", layout="wide")
 
 st.title("🌡️ Napi hőmérsékleti riport")
 st.caption("Forrás: HungaroMet – napi szinoptikus jelentések")
 
-date_selected = st.date_input(
-    "📅 Dátum",
-    value=datetime.now(ZoneInfo("Europe/Budapest")).date() - timedelta(days=1),
-)
+top_col1, top_col2 = st.columns([1, 3])
 
-if st.button("📥 Adatok betöltése"):
+with top_col1:
+    date_selected = st.date_input(
+        "📅 Dátum",
+        value=datetime.now(ZoneInfo("Europe/Budapest")).date() - timedelta(days=1),
+    )
+    load_btn = st.button("📥 Adatok betöltése")
+
+if load_btn:
     try:
         fname = build_filename_for_date(date_selected)
         zip_bytes = download_zip_bytes(BASE_INDEX_URL + fname)
@@ -144,64 +138,79 @@ if st.button("📥 Adatok betöltése"):
 
         df = parse_data(csv_text)
 
-        # ---------------------------------------------
-        # ORSZÁGOS
-        # ---------------------------------------------
-        st.subheader("🇭🇺 Országos hőmérsékleti szélsők")
-        hu_ext = calc_extremes(df)
+        st.session_state["zip_bytes"] = zip_bytes
+        st.session_state["zip_name"] = fname
 
-        c1, c2 = st.columns(2)
-        c1.metric("🔥 Maximum", f"{hu_ext['max']:.1f} °C")
-        c2.metric("❄️ Minimum", f"{hu_ext['min']:.1f} °C")
+        # -------------------------------------------------
+        # DASHBOARD METRICÁK
+        # -------------------------------------------------
+        st.subheader("📊 Összefoglaló")
+
+        metric_cols = st.columns(7)
+        hu = calc_extremes(df)
+        metric_cols[0].metric("🇭🇺 Max", f"{hu['max']:.1f} °C")
+        metric_cols[0].metric("🇭🇺 Min", f"{hu['min']:.1f} °C")
 
         export_row = {
             "Dátum": date_selected.strftime("%Y-%m-%d"),
-            "Országos maximum": hu_ext["max"],
-            "Országos minimum": hu_ext["min"],
+            "Országos maximum": hu["max"],
+            "Országos minimum": hu["min"],
         }
 
-        st.divider()
-
-        # ---------------------------------------------
-        # VÁROSOK
-        # ---------------------------------------------
-        for city in CITIES:
-            df_city = df[df["station_name"].str.contains(city, case=False, na=False)].copy()
-            if df_city.empty:
-                continue
-
-            st.subheader(f"🏙️ {city}")
+        for i, city in enumerate(CITIES, start=1):
+            df_city = df[df["station_name"].str.contains(city, case=False, na=False)]
             ext = calc_extremes(df_city)
 
-            c1, c2 = st.columns(2)
-            if ext["max"] is not None:
-                c1.metric("🔥 Maximum", f"{ext['max']:.1f} °C")
-            if ext["min"] is not None:
-                c2.metric("❄️ Minimum", f"{ext['min']:.1f} °C")
+            metric_cols[i].metric(
+                f"{city} max",
+                f"{ext['max']:.1f} °C" if pd.notna(ext["max"]) else "–",
+            )
+            metric_cols[i].metric(
+                f"{city} min",
+                f"{ext['min']:.1f} °C" if pd.notna(ext["min"]) else "–",
+            )
 
             export_row[f"{city} maximum"] = ext["max"]
             export_row[f"{city} minimum"] = ext["min"]
 
-            numeric_table = prepare_table(df_city)
-            display_table = format_for_display(numeric_table)
+        # -------------------------------------------------
+        # VÁROSI TÁBLÁZATOK (EXPANDER)
+        # -------------------------------------------------
+        st.subheader("🏙️ Városi állomások")
 
-            st.dataframe(
-                display_table.style.apply(
-                    style_extremes(numeric_table), axis=1
-                ),
-                use_container_width=True,
-                hide_index=True,
+        for city in CITIES:
+            df_city = df[df["station_name"].str.contains(city, case=False, na=False)]
+            if df_city.empty:
+                continue
+
+            with st.expander(city, expanded=False):
+                numeric = prepare_table(df_city)
+                display = format_for_display(numeric)
+
+                st.dataframe(
+                    display.style.apply(
+                        style_extremes(numeric), axis=1
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        # -------------------------------------------------
+        # LETÖLTÉSEK
+        # -------------------------------------------------
+        st.subheader("⬇️ Letöltések")
+        d1, d2 = st.columns(2)
+
+        with d1:
+            st.download_button(
+                "📦 Eredeti ZIP",
+                data=st.session_state["zip_bytes"],
+                file_name=st.session_state["zip_name"],
+                mime="application/zip",
             )
 
-            st.divider()
-
-        # ---------------------------------------------
-        # EXCEL EXPORT
-        # ---------------------------------------------
-        st.subheader("⬇️ Excel export")
-
-        export_df = pd.DataFrame(
-            [[
+        with d2:
+            export_df = pd.DataFrame([[
                 export_row.get("Dátum"),
                 export_row.get("Országos maximum"),
                 export_row.get("Országos minimum"),
@@ -234,19 +243,18 @@ if st.button("📥 Adatok betöltése"):
                 "Pécsi minimum",
                 "Szegedi maximum",
                 "Szegedi minimum",
-            ],
-        )
+            ])
 
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            export_df.to_excel(writer, index=False, sheet_name="Napi adatok")
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                export_df.to_excel(writer, index=False)
 
-        st.download_button(
-            "📥 Excel letöltése",
-            data=buffer.getvalue(),
-            file_name=f"napi_homerseklet_{date_selected}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+            st.download_button(
+                "📊 Excel export",
+                data=buffer.getvalue(),
+                file_name=f"napi_homerseklet_{date_selected}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
     except Exception as e:
         st.error(f"Hiba történt: {e}")
