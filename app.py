@@ -12,6 +12,16 @@ import streamlit as st
 # ---------------------------------------------------------
 BASE_INDEX_URL = "https://odp.met.hu/weather/weather_reports/synoptic/hungary/daily/csv/"
 
+CITY_BACKGROUNDS = {
+    "Országos": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/00/Flag_of_Hungary.svg/1280px-Flag_of_Hungary.svg.png",
+    "Budapest": "https://images.unsplash.com/photo-1549640376-8cc6b7c2f42f",
+    "Debrecen": "https://images.unsplash.com/photo-1618828665087-0cfdc2c8e3b2",
+    "Győr": "https://images.unsplash.com/photo-1604152135912-04a022e236a3",
+    "Miskolc": "https://images.unsplash.com/photo-1616431684203-3a7a5d2c2c0f",
+    "Pécs": "https://images.unsplash.com/photo-1600353068793-65d7dcddcb3c",
+    "Szeged": "https://images.unsplash.com/photo-1594737625785-4a4e6b2e8b45",
+}
+
 CITIES = ["Budapest", "Debrecen", "Győr", "Miskolc", "Pécs", "Szeged"]
 
 # ---------------------------------------------------------
@@ -54,72 +64,40 @@ def parse_data(csv_text):
 
 
 def calc_extremes(df):
-    return {
-        "min": df["min_val"].min(),
-        "max": df["max_val"].max(),
-    }
+    return {"min": df["min_val"].min(), "max": df["max_val"].max()}
 
 
-def prepare_table(df_city):
-    return (
-        df_city[["station_name", "station_number", "min_val", "max_val"]]
-        .rename(
-            columns={
-                "station_name": "Állomás",
-                "station_number": "Kód",
-                "min_val": "Minimum (°C)",
-                "max_val": "Maximum (°C)",
-            }
-        )
-        .sort_values("Állomás")
-    )
-
-
-def format_for_display(df):
-    df_disp = df.copy()
-    for col in ["Minimum (°C)", "Maximum (°C)"]:
-        df_disp[col] = df_disp[col].apply(
-            lambda x: f"{x:.1f}" if pd.notna(x) else "Nincs adat"
-        )
-    return df_disp
-
-
-def style_table(df_numeric):
-    min_v = df_numeric["Minimum (°C)"].min()
-    max_v = df_numeric["Maximum (°C)"].max()
-
-    def style(row):
-        styles = []
-        for col in row.index:
-            if col == "Minimum (°C)" and row[col] == min_v:
-                styles.append("color:#1f77b4;font-weight:bold;")
-            elif col == "Maximum (°C)" and row[col] == max_v:
-                styles.append("color:#d62728;font-weight:bold;")
-            else:
-                styles.append("")
-        return styles
-
-    return style
-
-
-def city_metric(city, ext):
+def city_card(title, ext):
+    bg = CITY_BACKGROUNDS.get(title, "")
     max_v = f"{ext['max']:.1f} °C" if pd.notna(ext["max"]) else "–"
     min_v = f"{ext['min']:.1f} °C" if pd.notna(ext["min"]) else "–"
 
     st.markdown(
         f"""
         <div style="
-            border:1px solid #ddd;
-            border-radius:10px;
-            padding:10px;
-            text-align:center;
-            background-color:#fafafa;
+            position:relative;
+            padding:14px;
+            border-radius:14px;
+            background:#ffffff;
+            box-shadow:0 4px 10px rgba(0,0,0,0.08);
+            overflow:hidden;
         ">
-            <div style="font-size:1.2em;font-weight:600;margin-bottom:4px;">
-                {city}
+            <div style="
+                position:absolute;
+                inset:0;
+                background-image:url('{bg}');
+                background-size:cover;
+                background-position:center;
+                opacity:0.10;
+            "></div>
+
+            <div style="position:relative;">
+                <div style="font-size:1.3em;font-weight:700;margin-bottom:6px;">
+                    {title}
+                </div>
+                <div style="color:#d62728;font-size:1.05em;">🔥 Max: {max_v}</div>
+                <div style="color:#1f77b4;font-size:1.05em;">❄️ Min: {min_v}</div>
             </div>
-            <div style="font-size:1em;color:#d62728;">Max: {max_v}</div>
-            <div style="font-size:1em;color:#1f77b4;">Min: {min_v}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -129,20 +107,17 @@ def city_metric(city, ext):
 # ---------------------------------------------------------
 # UI
 # ---------------------------------------------------------
-st.set_page_config(page_title="Napi hőmérsékleti riport", layout="wide")
+st.set_page_config(page_title="Napi hőmérsékleti riport")
 
 st.title("🌡️ Napi hőmérsékleti riport")
 st.caption("Forrás: HungaroMet – napi szinoptikus jelentések")
 
-ctrl_col, _ = st.columns([1, 4])
-with ctrl_col:
-    date_selected = st.date_input(
-        "📅 Dátum",
-        value=datetime.now(ZoneInfo("Europe/Budapest")).date() - timedelta(days=1),
-    )
-    load = st.button("📥 Betöltés")
+date_selected = st.date_input(
+    "📅 Dátum",
+    value=datetime.now(ZoneInfo("Europe/Budapest")).date() - timedelta(days=1),
+)
 
-if load:
+if st.button("📥 Adatok betöltése"):
     try:
         fname = build_filename_for_date(date_selected)
         zip_bytes = download_zip_bytes(BASE_INDEX_URL + fname)
@@ -152,57 +127,22 @@ if load:
         st.session_state["zip_bytes"] = zip_bytes
         st.session_state["zip_name"] = fname
 
-        # ---------------- DASHBOARD ----------------
+        # ------------------ ÖSSZEFOGLALÓ ------------------
         st.subheader("📊 Összefoglaló")
 
-        metric_cols = st.columns(7)
-        hu = calc_extremes(df)
-        city_metric("🇭🇺 Országos", hu)
+        cols = st.columns(3)
+        with cols[0]:
+            city_card("Országos", calc_extremes(df))
 
-        export_row = {
-            "Dátum": date_selected.strftime("%Y-%m-%d"),
-            "Országos maximum": hu["max"],
-            "Országos minimum": hu["min"],
-        }
-
-        for i, city in enumerate(CITIES):
-            with metric_cols[i + 1]:
-                df_city = df[df["station_name"].str.contains(city, case=False, na=False)]
-                ext = calc_extremes(df_city)
-                city_metric(city, ext)
-                export_row[f"{city} maximum"] = ext["max"]
-                export_row[f"{city} minimum"] = ext["min"]
-
-        # ---------------- TÁBLÁZATOK ----------------
-        st.subheader("🏙️ Városi állomások")
-
-        table_cols = st.columns(2)
         for i, city in enumerate(CITIES):
             df_city = df[df["station_name"].str.contains(city, case=False, na=False)]
-            if df_city.empty:
-                continue
+            with cols[(i + 1) % 3]:
+                city_card(city, calc_extremes(df_city))
 
-            with table_cols[i % 2]:
-                with st.expander(city, expanded=False):
-                    num = prepare_table(df_city)
-                    disp = format_for_display(num)
-                    st.dataframe(
-                        disp.style
-                        .apply(style_table(num), axis=1)
-                        .set_table_styles(
-                            [
-                                {"selector": "th", "props": [("background-color", "#f0f0f0"), ("border", "1px solid #ccc")]},
-                                {"selector": "td", "props": [("border", "1px solid #ddd")]},
-                            ]
-                        ),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
+        st.divider()
 
-        # ---------------- LETÖLTÉS ----------------
-        st.subheader("⬇️ Letöltések")
+        # ------------------ LETÖLTÉSEK ------------------
         d1, d2 = st.columns(2)
-
         with d1:
             st.download_button(
                 "📦 Eredeti ZIP",
@@ -213,39 +153,10 @@ if load:
 
         with d2:
             export_df = pd.DataFrame([[
-                export_row.get("Dátum"),
-                export_row.get("Országos maximum"),
-                export_row.get("Országos minimum"),
-                export_row.get("Budapest maximum"),
-                export_row.get("Budapest minimum"),
-                export_row.get("Debrecen maximum"),
-                export_row.get("Debrecen minimum"),
-                export_row.get("Győr maximum"),
-                export_row.get("Győr minimum"),
-                export_row.get("Miskolc maximum"),
-                export_row.get("Miskolc minimum"),
-                export_row.get("Pécs maximum"),
-                export_row.get("Pécs minimum"),
-                export_row.get("Szeged maximum"),
-                export_row.get("Szeged minimum"),
-            ]],
-            columns=[
-                "Dátum",
-                "Országos maximum",
-                "Országos minimum",
-                "Budapesti maximum",
-                "Budapesti minimum",
-                "Debreceni maximum",
-                "Debreceni minimum",
-                "Győri maximum",
-                "Győri minimum",
-                "Miskolci maximum",
-                "Miskolci minimum",
-                "Pécsi maximum",
-                "Pécsi minimum",
-                "Szegedi maximum",
-                "Szegedi minimum",
-            ])
+                date_selected.strftime("%Y-%m-%d"),
+                calc_extremes(df)["max"],
+                calc_extremes(df)["min"],
+            ]], columns=["Dátum", "Országos max", "Országos min"])
 
             buf = io.BytesIO()
             with pd.ExcelWriter(buf, engine="openpyxl") as w:
