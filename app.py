@@ -12,14 +12,7 @@ import streamlit as st
 # ---------------------------------------------------------
 BASE_INDEX_URL = "https://odp.met.hu/weather/weather_reports/synoptic/hungary/daily/csv/"
 
-CITIES = [
-    "Budapest",
-    "Debrecen",
-    "Győr",
-    "Miskolc",
-    "Pécs",
-    "Szeged",
-]
+CITIES = ["Budapest", "Debrecen", "Győr", "Miskolc", "Pécs", "Szeged"]
 
 # ---------------------------------------------------------
 # SEGÉDFÜGGVÉNYEK
@@ -53,13 +46,10 @@ def to_float_clean(series):
 def parse_data(csv_text):
     df = pd.read_csv(io.StringIO(csv_text), sep=";", dtype=str)
     df.columns = [c.strip() for c in df.columns]
-
     df["station_number"] = df.iloc[:, 1]
     df["station_name"] = df.iloc[:, 2]
-
     df["min_val"] = to_float_clean(df.iloc[:, 10])
     df["max_val"] = to_float_clean(df.iloc[:, 12])
-
     return df
 
 
@@ -72,9 +62,7 @@ def calc_extremes(df):
 
 def prepare_table(df_city):
     return (
-        df_city[
-            ["station_name", "station_number", "min_val", "max_val"]
-        ]
+        df_city[["station_name", "station_number", "min_val", "max_val"]]
         .rename(
             columns={
                 "station_name": "Állomás",
@@ -96,21 +84,46 @@ def format_for_display(df):
     return df_disp
 
 
-def style_extremes(df_numeric):
+def style_table(df_numeric):
     min_v = df_numeric["Minimum (°C)"].min()
     max_v = df_numeric["Maximum (°C)"].max()
 
     def style(row):
-        return [
-            "color: blue; font-weight: bold"
-            if col == "Minimum (°C)" and row[col] == min_v
-            else "color: red; font-weight: bold"
-            if col == "Maximum (°C)" and row[col] == max_v
-            else ""
-            for col in row.index
-        ]
+        styles = []
+        for col in row.index:
+            if col == "Minimum (°C)" and row[col] == min_v:
+                styles.append("color:#1f77b4;font-weight:bold;")
+            elif col == "Maximum (°C)" and row[col] == max_v:
+                styles.append("color:#d62728;font-weight:bold;")
+            else:
+                styles.append("")
+        return styles
 
     return style
+
+
+def city_metric(city, ext):
+    max_v = f"{ext['max']:.1f} °C" if pd.notna(ext["max"]) else "–"
+    min_v = f"{ext['min']:.1f} °C" if pd.notna(ext["min"]) else "–"
+
+    st.markdown(
+        f"""
+        <div style="
+            border:1px solid #ddd;
+            border-radius:10px;
+            padding:10px;
+            text-align:center;
+            background-color:#fafafa;
+        ">
+            <div style="font-size:1.2em;font-weight:600;margin-bottom:4px;">
+                {city}
+            </div>
+            <div style="font-size:1em;color:#d62728;">Max: {max_v}</div>
+            <div style="font-size:1em;color:#1f77b4;">Min: {min_v}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ---------------------------------------------------------
@@ -121,35 +134,30 @@ st.set_page_config(page_title="Napi hőmérsékleti riport", layout="wide")
 st.title("🌡️ Napi hőmérsékleti riport")
 st.caption("Forrás: HungaroMet – napi szinoptikus jelentések")
 
-top_col1, top_col2 = st.columns([1, 3])
-
-with top_col1:
+ctrl_col, _ = st.columns([1, 4])
+with ctrl_col:
     date_selected = st.date_input(
         "📅 Dátum",
         value=datetime.now(ZoneInfo("Europe/Budapest")).date() - timedelta(days=1),
     )
-    load_btn = st.button("📥 Adatok betöltése")
+    load = st.button("📥 Betöltés")
 
-if load_btn:
+if load:
     try:
         fname = build_filename_for_date(date_selected)
         zip_bytes = download_zip_bytes(BASE_INDEX_URL + fname)
         csv_text = extract_csv_from_zipbytes(zip_bytes, fname.replace(".zip", ""))
-
         df = parse_data(csv_text)
 
         st.session_state["zip_bytes"] = zip_bytes
         st.session_state["zip_name"] = fname
 
-        # -------------------------------------------------
-        # DASHBOARD METRICÁK
-        # -------------------------------------------------
+        # ---------------- DASHBOARD ----------------
         st.subheader("📊 Összefoglaló")
 
         metric_cols = st.columns(7)
         hu = calc_extremes(df)
-        metric_cols[0].metric("🇭🇺 Max", f"{hu['max']:.1f} °C")
-        metric_cols[0].metric("🇭🇺 Min", f"{hu['min']:.1f} °C")
+        city_metric("🇭🇺 Országos", hu)
 
         export_row = {
             "Dátum": date_selected.strftime("%Y-%m-%d"),
@@ -157,55 +165,49 @@ if load_btn:
             "Országos minimum": hu["min"],
         }
 
-        for i, city in enumerate(CITIES, start=1):
-            df_city = df[df["station_name"].str.contains(city, case=False, na=False)]
-            ext = calc_extremes(df_city)
+        for i, city in enumerate(CITIES):
+            with metric_cols[i + 1]:
+                df_city = df[df["station_name"].str.contains(city, case=False, na=False)]
+                ext = calc_extremes(df_city)
+                city_metric(city, ext)
+                export_row[f"{city} maximum"] = ext["max"]
+                export_row[f"{city} minimum"] = ext["min"]
 
-            metric_cols[i].metric(
-                f"{city} max",
-                f"{ext['max']:.1f} °C" if pd.notna(ext["max"]) else "–",
-            )
-            metric_cols[i].metric(
-                f"{city} min",
-                f"{ext['min']:.1f} °C" if pd.notna(ext["min"]) else "–",
-            )
-
-            export_row[f"{city} maximum"] = ext["max"]
-            export_row[f"{city} minimum"] = ext["min"]
-
-        # -------------------------------------------------
-        # VÁROSI TÁBLÁZATOK (EXPANDER)
-        # -------------------------------------------------
+        # ---------------- TÁBLÁZATOK ----------------
         st.subheader("🏙️ Városi állomások")
 
-        for city in CITIES:
+        table_cols = st.columns(2)
+        for i, city in enumerate(CITIES):
             df_city = df[df["station_name"].str.contains(city, case=False, na=False)]
             if df_city.empty:
                 continue
 
-            with st.expander(city, expanded=False):
-                numeric = prepare_table(df_city)
-                display = format_for_display(numeric)
+            with table_cols[i % 2]:
+                with st.expander(city, expanded=False):
+                    num = prepare_table(df_city)
+                    disp = format_for_display(num)
+                    st.dataframe(
+                        disp.style
+                        .apply(style_table(num), axis=1)
+                        .set_table_styles(
+                            [
+                                {"selector": "th", "props": [("background-color", "#f0f0f0"), ("border", "1px solid #ccc")]},
+                                {"selector": "td", "props": [("border", "1px solid #ddd")]},
+                            ]
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
-                st.dataframe(
-                    display.style.apply(
-                        style_extremes(numeric), axis=1
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-        # -------------------------------------------------
-        # LETÖLTÉSEK
-        # -------------------------------------------------
+        # ---------------- LETÖLTÉS ----------------
         st.subheader("⬇️ Letöltések")
         d1, d2 = st.columns(2)
 
         with d1:
             st.download_button(
                 "📦 Eredeti ZIP",
-                data=st.session_state["zip_bytes"],
-                file_name=st.session_state["zip_name"],
+                st.session_state["zip_bytes"],
+                st.session_state["zip_name"],
                 mime="application/zip",
             )
 
@@ -245,14 +247,14 @@ if load_btn:
                 "Szegedi minimum",
             ])
 
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                export_df.to_excel(writer, index=False)
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine="openpyxl") as w:
+                export_df.to_excel(w, index=False)
 
             st.download_button(
                 "📊 Excel export",
-                data=buffer.getvalue(),
-                file_name=f"napi_homerseklet_{date_selected}.xlsx",
+                buf.getvalue(),
+                f"napi_homerseklet_{date_selected}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
