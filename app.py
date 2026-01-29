@@ -1,4 +1,5 @@
 import io
+import re
 import zipfile
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -15,15 +16,15 @@ BASE_INDEX_URL = "https://odp.met.hu/weather/weather_reports/synoptic/hungary/da
 
 CITIES = ["Budapest", "Debrecen", "Győr", "Miskolc", "Pécs", "Szeged"]
 
-# Városképek + zászló (Wikimedia direct file path)
-CITY_BACKGROUNDS = {
-    "Országos": "https://commons.wikimedia.org/wiki/Special:FilePath/Flag_of_Hungary.svg",
-    "Budapest": "https://commons.wikimedia.org/wiki/Special:FilePath/Budapest_02.jpg",
-    "Debrecen": "https://commons.wikimedia.org/wiki/Special:FilePath/Debrecen_(2).JPG",
-    "Győr": "https://commons.wikimedia.org/wiki/Special:FilePath/Gy%C5%91r_-_Hungary_(5129270479).jpg",
-    "Miskolc": "https://commons.wikimedia.org/wiki/Special:FilePath/Miskolc20070616_12.jpg",
-    "Pécs": "https://commons.wikimedia.org/wiki/Special:FilePath/P%C3%A9cs_Sz%C3%A9chenyi_Square.JPG",
-    "Szeged": "https://commons.wikimedia.org/wiki/Special:FilePath/Szeged-varoshaza-02.jpg",
+# Kártyákhoz enyhe háttérszínek (városonként külön, hogy vizuálisan tagoljon)
+CARD_BG = {
+    "Országos": "#f6f7fb",
+    "Budapest": "#f4fbff",
+    "Debrecen": "#f7fbf4",
+    "Győr": "#fff8f2",
+    "Miskolc": "#f9f4ff",
+    "Pécs": "#fffdf2",
+    "Szeged": "#f2fff9",
 }
 
 # ---------------------------------------------------------
@@ -112,52 +113,59 @@ def style_table(df_numeric):
     return row_style
 
 
-def card_html(title, ext, bg_url, opacity=0.10):
+def city_pattern(city: str) -> re.Pattern:
+    """
+    Szűrés: a városnév csak "önálló token" legyen:
+    - megengedett: 'Győr', 'Győr-Újváros', 'Győr xyz'
+    - kizárt: 'Győrsövényház', 'Diósgyőr'
+    Logika: elején szóhatár / nem betű, majd városnév, utána szóvég / nem betű.
+    """
+    # A magyar ékezetes betűket is vegyük betűnek: \w nem tökéletes, ezért explicit kizárás.
+    # Egyszerű és működő: előtte ne legyen betű, utána ne legyen betű.
+    return re.compile(rf"(?<![A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű]){re.escape(city)}(?![A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű])", re.IGNORECASE)
+
+
+CITY_PATTERNS = {c: city_pattern(c) for c in CITIES}
+
+
+def filter_city(df: pd.DataFrame, city: str) -> pd.DataFrame:
+    pat = CITY_PATTERNS[city]
+    # station_name lehet NaN, ezért na=False
+    return df[df["station_name"].astype(str).str.contains(pat, na=False)].copy()
+
+
+def card_html(title, ext, bg_color):
     max_txt = f"{ext['max']:.1f} °C" if pd.notna(ext["max"]) else "Nincs adat"
     min_txt = f"{ext['min']:.1f} °C" if pd.notna(ext["min"]) else "Nincs adat"
 
     return f"""
     <div style="
-        position:relative;
         border:1px solid rgba(0,0,0,0.10);
         border-radius:14px;
         padding:14px 14px 12px 14px;
-        background:#ffffff;
+        background:{bg_color};
         box-shadow:0 6px 18px rgba(0,0,0,0.06);
-        overflow:hidden;
         font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
     ">
-        <div style="
-            position:absolute; inset:0;
-            background-image:url('{bg_url}');
-            background-size:cover;
-            background-position:center;
-            opacity:{opacity};
-            filter:saturate(0.9) contrast(0.95);
-        "></div>
+        <div style="font-size:18px;font-weight:900; line-height:1.2; margin-bottom:8px;">
+            {title}
+        </div>
 
-        <div style="position:relative;">
-            <div style="font-size:18px;font-weight:900; line-height:1.2; margin-bottom:8px;">
-                {title}
-            </div>
+        <div style="display:flex; justify-content:space-between; align-items:baseline;">
+            <div style="font-size:14px; font-weight:800; color:#d62728;">🔥 Max</div>
+            <div style="font-size:20px; font-weight:900; color:#111;">{max_txt}</div>
+        </div>
 
-            <div style="display:flex; justify-content:space-between; align-items:baseline;">
-                <div style="font-size:14px; font-weight:800; color:#d62728;">🔥 Max</div>
-                <div style="font-size:20px; font-weight:900; color:#111;">{max_txt}</div>
-            </div>
-
-            <div style="display:flex; justify-content:space-between; align-items:baseline; margin-top:6px;">
-                <div style="font-size:14px; font-weight:800; color:#1f77b4;">❄️ Min</div>
-                <div style="font-size:20px; font-weight:900; color:#111;">{min_txt}</div>
-            </div>
+        <div style="display:flex; justify-content:space-between; align-items:baseline; margin-top:6px;">
+            <div style="font-size:14px; font-weight:800; color:#1f77b4;">❄️ Min</div>
+            <div style="font-size:20px; font-weight:900; color:#111;">{min_txt}</div>
         </div>
     </div>
     """
 
 
-def render_card(title, ext, key_for_bg, height=135):
-    bg = CITY_BACKGROUNDS.get(key_for_bg, "")
-    html = card_html(title=title, ext=ext, bg_url=bg, opacity=0.10)
+def render_card(title, ext, bg_key, height=135):
+    html = card_html(title=title, ext=ext, bg_color=CARD_BG.get(bg_key, "#f6f7fb"))
     components.html(html, height=height)
 
 
@@ -197,7 +205,7 @@ if st.session_state["loaded"] is None:
 # ---------------------------------------------------------
 st.set_page_config(page_title="Napi hőmérsékleti riport", layout="centered")
 
-# Max szélesség: pont annyi, hogy ne legyen horizontal scroll / csúszka
+# Max szélesség: ne legyen vízszintes csúszka
 st.markdown(
     """
     <style>
@@ -235,7 +243,7 @@ if st.button("📥 Adatok betöltése"):
 
         values = {"Országos": calc_extremes(df)}
         for city in CITIES:
-            df_city = df[df["station_name"].str.contains(city, case=False, na=False)]
+            df_city = filter_city(df, city)
             values[city] = calc_extremes(df_city)
         st.session_state["values_by_city"] = values
 
@@ -250,11 +258,9 @@ if st.session_state["loaded"] and st.session_state["df"] is not None:
     df = st.session_state["df"]
     values = st.session_state["values_by_city"]
 
-    # ---- Országos szekció
     st.header("🇭🇺 Országos adatok")
-    render_card("Országos", values["Országos"], key_for_bg="Országos", height=145)
+    render_card("Országos", values["Országos"], bg_key="Országos", height=145)
 
-    # Letöltések (egy sorban)
     dl1, dl2 = st.columns(2)
     with dl1:
         st.download_button(
@@ -279,21 +285,16 @@ if st.session_state["loaded"] and st.session_state["df"] is not None:
 
     st.divider()
 
-    # ---- Városok szekció
     st.header("🏙️ Városi adatok")
-
-    # 3-as grid: jó arány centered layouton, és nem szokott csúszkát generálni
     cols = st.columns(3)
     for i, city in enumerate(CITIES):
         with cols[i % 3]:
-            render_card(city, values[city], key_for_bg=city, height=145)
+            render_card(city, values[city], bg_key=city, height=145)
 
     st.subheader("📋 Városi állomások (részletek)")
-
-    # Táblázatok két oszlopban, és ALAPBÓL NYITVA
     tcols = st.columns(2)
     for i, city in enumerate(CITIES):
-        df_city = df[df["station_name"].str.contains(city, case=False, na=False)].copy()
+        df_city = filter_city(df, city)
         with tcols[i % 2]:
             with st.expander(city, expanded=True):
                 numeric = prepare_table(df_city)
